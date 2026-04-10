@@ -1,80 +1,182 @@
-# IPL Predictor 2026 — Backend Server
+# IPL Predictor Pro 2026
 
-Self-hosted Node.js/Express API with PostgreSQL.
+A full-stack web app for IPL match predictions with private rooms, leaderboards, real-time chat, and live scores.
 
-## Quick Start
+## Features
+
+- Predict match winners before each game starts
+- Private prediction rooms with invite codes
+- Global and per-room leaderboards
+- Real-time chat during live matches (Socket.IO)
+- Live score streaming from Cricbuzz (auto-updates every 30s)
+- Admin dashboard to manage results, votes, and match overrides
+
+---
+
+## Prerequisites
+
+- Node.js 18+
+- PostgreSQL (local or hosted — e.g. Supabase, Render, Neon)
+
+---
+
+## Quick Start (Local Development)
+
+### 1. Clone and install
 
 ```bash
-cd server
+git clone <repo-url>
+cd ipl-predictor-pro-main
 npm install
-npm start
+cd server && npm install && cd ..
 ```
 
-Server runs on the `PORT` environment variable.
+### 2. Configure environment
 
-## Environment Variables
-
-| Variable | Required | Description |
-|---|---|---|
-| `PORT` | yes | Server port |
-| `DATABASE_URL` | yes | PostgreSQL connection string |
-| `JWT_SECRET` | yes | JWT signing secret |
-| `ADMIN_PASSWORD` | yes | Password to unlock admin access |
-| `ADMIN_USERNAME` | yes | Seeded admin username |
-| `ADMIN_DEFAULT_PW` | yes | Seeded admin account password |
-
-For local development, create a `.env` file by copying `.env.example`. In production, you can provide the same variables through your host's environment settings instead of a `.env` file.
-
-## Local PostgreSQL Setup
-
-1. Create a PostgreSQL database
-2. Create `.env` from the example and set your values:
+**Frontend** — copy `.env.example` at the root:
 
 ```bash
 cp .env.example .env
 ```
 
-3. Update `DATABASE_URL` in `.env`, for example:
-
-```bash
-DATABASE_URL=postgresql://postgres:postgres@localhost:5432/ipl_predictor
+`.env`:
+```
+VITE_API_URL=http://localhost:3001
 ```
 
-4. Start the server:
+**Backend** — copy `server/.env.example`:
 
 ```bash
-npm start
+cp server/.env.example server/.env
 ```
 
-The app auto-creates tables on boot and seeds the default admin user if it does not exist.
+`server/.env`:
+```
+PORT=3001
+DATABASE_URL=postgresql://postgres:password@localhost:5432/ipl_predictor
+JWT_SECRET=your-secret-key
+ADMIN_PASSWORD=your-admin-unlock-password
+ADMIN_USERNAME=admin
+ADMIN_DEFAULT_PW=admin123
+```
 
-## Deploy
+### 3. Create the database
 
-1. Copy the `server/` folder to your VPS
-2. Run `npm install`
-3. Provision PostgreSQL and set `DATABASE_URL`
-4. Set environment variables (especially `JWT_SECRET`)
-5. Run `npm start` (use PM2 or systemd for production)
-6. Set `VITE_API_URL` in the frontend to your server URL
+```bash
+createdb ipl_predictor
+```
 
-On Render, set `PORT`, `DATABASE_URL`, `JWT_SECRET`, `ADMIN_PASSWORD`, `ADMIN_USERNAME`, and `ADMIN_DEFAULT_PW` in the service environment. Render usually does not provide a checked-in `.env` file at runtime.
+Tables are created automatically on first server start.
 
-## API Endpoints
+### 4. Run everything with one command
 
-- `POST /api/register` — `{ username, password }`
-- `POST /api/login` — `{ username, password }`
-- `GET /api/me` — Get current user (auth required)
-- `POST /api/admin/unlock` — `{ password }` (auth required)
-- `GET /api/votes` — All votes grouped by match
-- `GET /api/vote-counts` — Anonymous vote totals grouped by match
-- `POST /api/vote` — `{ matchId, prediction }` (auth required)
-- `GET /api/results` — All match results
-- `POST /api/result` — `{ matchId, winner }` (admin only)
-- `POST /api/admin/vote` — Admin update a user's vote
-- `POST /api/admin/delete-vote` — Admin delete a user's vote
-- `POST /api/admin/reset` — Clear votes and results
-- `GET /api/leaderboard` — Sorted leaderboard
+```bash
+npm run dev:all
+```
 
-## Database
+This starts both the frontend and backend concurrently:
 
-Data is stored in PostgreSQL. The backend no longer uses a local SQLite file.
+| Process | URL |
+|---------|-----|
+| Frontend (Vite) | http://localhost:5173 |
+| Backend (Express) | http://localhost:3001 |
+
+The default admin account is created automatically using `ADMIN_USERNAME` / `ADMIN_DEFAULT_PW` from `server/.env`.
+
+---
+
+## Environment Variables
+
+### Frontend (`/.env`)
+
+| Variable | Description |
+|----------|-------------|
+| `VITE_API_URL` | URL of the backend server |
+
+### Backend (`/server/.env`)
+
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `PORT` | yes | Port the backend listens on |
+| `DATABASE_URL` | yes | PostgreSQL connection string |
+| `JWT_SECRET` | yes | Secret used to sign JWT tokens |
+| `ADMIN_PASSWORD` | yes | Password to unlock admin mode in the UI |
+| `ADMIN_USERNAME` | yes | Username for the seeded admin account |
+| `ADMIN_DEFAULT_PW` | yes | Password for the seeded admin account |
+| `SERVER_URL` | no | Public URL used for the self-ping keep-alive (Render deployments) |
+
+---
+
+## Scripts
+
+Run from the project root:
+
+| Command | Description |
+|---------|-------------|
+| `npm run dev:all` | Start frontend + backend together |
+| `npm run dev` | Frontend only |
+| `npm run dev:server` | Backend only (with auto-reload) |
+| `npm run build` | Production build of the frontend |
+
+---
+
+## Live Scores
+
+Live scores are fetched automatically every 30 seconds during in-progress matches and pushed to all connected clients via Socket.IO.
+
+**Source:** Cricbuzz unofficial web API (`cricbuzz.com/api/cricket-match/live`) — free, no API key required.
+
+Scores appear as a live banner inside the match card when voting is locked.
+
+---
+
+## Deployment
+
+### Frontend → Vercel
+
+1. Push the repo to GitHub
+2. Import the project in Vercel
+3. Set the environment variable `VITE_API_URL` to your backend URL
+4. Deploy
+
+### Backend → Render (or any Node host)
+
+1. Create a new **Web Service** pointing to the `server/` directory
+2. Set build command: `npm install`
+3. Set start command: `node index.js`
+4. Add all `server/.env` variables in the Render environment settings
+5. Set `SERVER_URL` to the service's public URL (enables the self-ping keep-alive)
+
+Provision a **PostgreSQL** database (Render, Supabase, or Neon) and paste the connection string into `DATABASE_URL`.
+
+---
+
+## Project Structure
+
+```
+ipl-predictor-pro-main/
+├── src/                  # React frontend (Vite + TypeScript)
+│   ├── pages/            # Index, Leaderboard, ChatRoom, Rooms, Admin, ...
+│   ├── components/       # MatchPoll, Header, dashboard/*, ui/*
+│   └── lib/              # api.ts, auth.tsx, data.ts, socket.ts
+├── server/               # Express backend
+│   ├── index.js          # All routes, Socket.IO, live score polling
+│   └── schedule.js       # IPL 2026 match schedule (70 matches)
+├── public/               # Static assets (team logos)
+├── .env.example          # Frontend env template
+└── server/.env.example   # Backend env template
+```
+
+---
+
+## Admin Guide
+
+1. Log in with the admin account (`ADMIN_USERNAME` / `ADMIN_DEFAULT_PW`)
+2. Go to the Admin page and click **Unlock Admin** — enter `ADMIN_PASSWORD`
+3. From the admin panel you can:
+   - Set match results (winner + score summary)
+   - Trigger automatic result sync from Cricbuzz
+   - Override vote locks per match
+   - Edit or delete individual votes
+   - Post announcements (shown as a marquee on the dashboard)
+   - Reset all votes and results

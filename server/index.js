@@ -1379,7 +1379,7 @@ app.post("/api/admin/match-bot-settings", authMiddleware, adminMiddleware, async
   res.json({ ok: true });
 }));
 
-// ─── Automated Result Service (Cricbuzz API) ───────────────────────────────
+// ─── Automated Result Service (ESPN Cricinfo API) ──────────────────────────
 
 const TEAM_NAME_MAP = {
   "Chennai Super Kings": "CSK",
@@ -1395,6 +1395,20 @@ const TEAM_NAME_MAP = {
   "Lucknow Super Giants": "LSG",
 };
 
+/** Static home venue fallback (used when ESPN summary venue is unavailable) */
+const TEAM_HOME_VENUE = {
+  MI:   'Wankhede Stadium, Mumbai',
+  CSK:  'MA Chidambaram Stadium, Chennai',
+  RCB:  'M. Chinnaswamy Stadium, Bengaluru',
+  KKR:  'Eden Gardens, Kolkata',
+  DC:   'Arun Jaitley Stadium, Delhi',
+  PBKS: 'Mullanpur Stadium, Chandigarh',
+  RR:   'Sawai Mansingh Stadium, Jaipur',
+  SRH:  'Rajiv Gandhi International Stadium, Hyderabad',
+  GT:   'Narendra Modi Stadium, Ahmedabad',
+  LSG:  'BRSABV Ekana Cricket Stadium, Lucknow',
+};
+
 /**
  * Normalizes team names for fuzzy matching
  */
@@ -1403,7 +1417,7 @@ function normalizeTeam(name) {
 }
 
 /**
- * Finds the Cricbuzz winner from the API response status string
+ * Finds the winner from the API response status string
  * Example: "RCB won by 20 runs" -> "RCB"
  */
 function parseWinnerFromStatus(status, team1Code, team2Code) {
@@ -1426,110 +1440,319 @@ function parseWinnerFromStatus(status, team1Code, team2Code) {
   return null;
 }
 
-/** Score summary: team scores first, then result status on next line. */
-function extractScoreSummary(matchInfo) {
-  if (!matchInfo) return null;
-  const t1 = matchInfo.team1;
-  const t2 = matchInfo.team2;
-  const st = (matchInfo.status || "").trim();
-  const shortName = (t) =>
-    t?.teamSName ||
-    (typeof t?.teamName === "string" && t.teamName.split(/\s+/).map((w) => w[0]).join("")) ||
-    "?";
-  const fmt = (t) => {
-    if (!t) return null;
-    if (typeof t.score === "string" && t.score.length > 0 && t.score !== "-1") {
-      return `${shortName(t)}: ${t.score}`;
-    }
-    if (t.score != null && Number(t.score) >= 0 && Number(t.score) !== -1) {
-      const wk = t.wickets != null ? t.wickets : 0;
-      const ov = t.overs ?? t.oversText ?? t.overNbr ?? "?";
-      return `${shortName(t)}: ${t.score}/${wk} (${ov} ov)`;
-    }
-    return null;
-  };
-  const scores = [fmt(t1), fmt(t2)].filter(Boolean);
-  if (scores.length >= 1 && st) return `${scores.join(' · ')}\n${st}`;
-  if (scores.length >= 1) return scores.join(' · ');
-  return st || null;
+/** Score summary from ESPN match: "RR: 187/4 (20.0) · RCB: 145/8 (20.0)\nRR won by 42 runs" */
+function extractScoreSummaryESPN(espnMatch) {
+  if (!espnMatch) return null;
+  const { team1, team2, status } = espnMatch;
+  const parts = [];
+  if (team1?.score) parts.push(`${team1.short}: ${team1.score}`);
+  if (team2?.score) parts.push(`${team2.short}: ${team2.score}`);
+  const scoreStr = parts.join(' · ');
+  if (scoreStr && status) return `${scoreStr}\n${status}`;
+  if (scoreStr) return scoreStr;
+  return status || null;
 }
 
-/** Extracts toss info from matchInfo.tossResults → e.g. "KKR won the toss and chose to bat" */
-function extractTossInfo(matchInfo) {
-  const toss = matchInfo?.tossResults;
-  if (!toss || !toss.tossWinnerName) return null;
-  const winner = TEAM_NAME_MAP[toss.tossWinnerName] || toss.tossWinnerName;
-  const decision = toss.decision === 'bat' ? 'bat' : 'bowl';
+/** Extract toss info from ESPN summary notes array.
+ *  ESPN format (type:"toss"): "Lucknow Super Giants , elected to field first" */
+function extractTossInfoESPN(notes) {
+  if (!Array.isArray(notes)) return null;
+  const tossNote = notes.find(n => n.type === 'toss');
+  if (!tossNote) return null;
+  const text = (tossNote.text || '').trim();
+  // "Team Name , elected to bat/field first"
+  const m = text.match(/^(.+?)\s*,?\s*elected to (bat|field)/i);
+  if (!m) return text;
+  const winnerFull = m[1].trim();
+  const decision = /field/i.test(m[2]) ? 'bowl' : 'bat';
+  const winner = TEAM_NAME_MAP[winnerFull] || winnerFull;
   return `${winner} won the toss and chose to ${decision}`;
 }
 
-/** Fetches all IPL matches from Cricbuzz unofficial API (live + recent). No key required. */
-async function fetchCricbuzzAll() {
-  const headers = {
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-    'Accept': 'application/json',
-    'Accept-Language': 'en-US,en;q=0.9',
-    'Referer': 'https://www.cricbuzz.com/',
-    'Origin': 'https://www.cricbuzz.com',
+const ESPN_IPL_BASE = 'https://site.api.espn.com/apis/site/v2/sports/cricket/8048';
+
+/** Abbreviate a full team name to initials if not in TEAM_NAME_MAP */
+function teamAbbr(fullName) {
+  return TEAM_NAME_MAP[fullName] ||
+    fullName.split(/\s+/).map(w => w[0]).join('').toUpperCase();
+}
+
+/** Convert a single ESPN event to a normalized internal match object */
+function adaptESPNEvent(evt) {
+  if (!evt?.id) return null;
+  const comps = evt.competitors || [];
+  const c1 = comps[0] || {};
+  const c2 = comps[1] || {};
+  const state = evt.fullStatus?.type?.state || 'pre';
+  const status = evt.fullStatus?.summary || evt.fullStatus?.type?.description || '';
+  const t1Name = c1.displayName || '';
+  const t2Name = c2.displayName || '';
+  return {
+    espnEventId: String(evt.id),
+    team1: { name: t1Name, short: teamAbbr(t1Name), score: c1.score || '' },
+    team2: { name: t2Name, short: teamAbbr(t2Name), score: c2.score || '' },
+    state,          // "pre" | "in" | "post"
+    status,         // human-readable e.g. "RR won by 8 wickets"
+    startDateISO: evt.date || null,
+    winnerName: state === 'post'
+      ? (c1.winner ? t1Name : c2.winner ? t2Name : null)
+      : null,
   };
-  const [liveResp, recentResp] = await Promise.all([
-    axios.get('https://www.cricbuzz.com/api/cricket-match/live', { headers, timeout: 10000 }),
-    axios.get('https://www.cricbuzz.com/api/cricket-match/recent', { headers, timeout: 10000 }),
-  ]);
-  const live = collectCricbuzzMatchesFromPayload(liveResp.data);
-  const recent = collectCricbuzzMatchesFromPayload(recentResp.data);
-  return dedupeCricbuzzMatches([...live, ...recent]);
 }
 
-/**
- * Flattens match list objects from /series/v1/:id or /matches/v1/recent style payloads.
- */
-function collectCricbuzzMatchesFromPayload(data) {
-  if (!data || typeof data !== "object") return [];
+/** Fetch all IPL events from ESPN Cricinfo (free, no key). Returns normalized match objects. */
+async function fetchESPNAll() {
+  const resp = await axios.get(`${ESPN_IPL_BASE}/events`, { timeout: 10000 });
+  if (!resp.data?.events) return [];
+  return resp.data.events.map(adaptESPNEvent).filter(Boolean);
+}
 
-  const fromTypeMatches = [];
-  const typeMatches = data.typeMatches || [];
-  typeMatches.forEach((type) => {
-    type.seriesMatches?.forEach((series) => {
-      const matches = series.seriesAdWrapper?.matches || series.matches;
-      if (matches) fromTypeMatches.push(...matches);
+/** Parse playing XI and impact player pool for both teams from ESPN summary data */
+function extractLineupsESPN(rosters, notes) {
+  if (!Array.isArray(rosters)) return null;
+  const result = [];
+  for (const teamRoster of rosters) {
+    const abbr = teamRoster.team?.abbreviation || '';
+    const teamName = teamRoster.team?.displayName || '';
+    const starters = teamRoster.roster.filter(p => p.starter);
+
+    const xi = starters.slice(0, 11).map(p => {
+      const name = p.athlete.battingName || p.athlete.shortName || p.athlete.displayName;
+      const tags = [];
+      if (p.captain) tags.push('c');
+      const pos = p.athlete.position || {};
+      const posId   = String(pos.id   || '').toUpperCase();
+      const posAbbr = String(pos.abbreviation || '').toUpperCase();
+      const posName = String(pos.displayName || pos.name || '').toLowerCase();
+      const isKeeper = posId === 'WK' || posAbbr === 'WK' ||
+                       posId.includes('WK') || posAbbr.includes('WK') ||
+                       posName.includes('wicket') || posName.includes('keeper');
+      if (isKeeper) tags.push('wk');
+      return tags.length ? `${name} (${tags.join(' & ')})` : name;
     });
-  });
-  if (fromTypeMatches.length > 0) return dedupeCricbuzzMatches(fromTypeMatches);
 
-  const fromWalk = [];
-  function walk(node) {
-    if (!node || typeof node !== "object") return;
-    const mi = node.matchInfo;
-    if (mi?.team1?.teamName && mi?.team2?.teamName && mi.startDate != null) {
-      fromWalk.push(node);
-      return;
+    // Impact player pool: matchnote "Team Impact Player Subs: p1, p2 and p3"
+    const impactNote = (notes || []).find(n =>
+      n.type === 'matchnote' &&
+      n.text.includes('Impact Player Subs:') &&
+      n.text.toLowerCase().startsWith(teamName.toLowerCase())
+    );
+    let impactPool = [];
+    if (impactNote) {
+      const m = impactNote.text.match(/Impact Player Subs:\s*(.+)$/i);
+      if (m) impactPool = m[1].split(/,\s*|\s+and\s+/).map(s => s.trim()).filter(Boolean);
     }
-    if (Array.isArray(node)) {
-      for (const item of node) walk(item);
-    } else {
-      for (const v of Object.values(node)) walk(v);
-    }
+
+    result.push({ abbr, xi, impactPool });
   }
-  walk(data);
-  return dedupeCricbuzzMatches(fromWalk);
+  return result.length ? result : null;
 }
 
-function dedupeCricbuzzMatches(matches) {
-  const seen = new Set();
-  const out = [];
-  for (const m of matches) {
-    const mi = m.matchInfo;
-    if (!mi) continue;
-    const key =
-      mi.matchId != null
-        ? String(mi.matchId)
-        : `${mi.startDate}-${mi.team1?.teamName}-${mi.team2?.teamName}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
-    out.push(m);
+/** Build the toss announcement message with playing XIs and impact pools */
+function formatTossMessage(toss, lineups) {
+  const lines = [`🪙 ${toss}`];
+  if (Array.isArray(lineups)) {
+    for (const team of lineups) {
+      lines.push('');
+      lines.push(`🏏 ${team.abbr} Playing XI:`);
+      lines.push(team.xi.join(', '));
+      if (team.impactPool.length > 0) {
+        lines.push(`⚡ Impact Players: ${team.impactPool.join(', ')}`);
+      }
+    }
   }
-  return out;
+  return lines.join('\n');
+}
+
+/** Fetch toss info + playing XIs for a specific ESPN event via the summary endpoint */
+async function fetchESPNSummary(espnEventId) {
+  try {
+    const resp = await axios.get(
+      `${ESPN_IPL_BASE}/summary?event=${espnEventId}`,
+      { timeout: 8000 }
+    );
+    const data = resp.data || {};
+    const comp = data.header?.competitions?.[0] || {};
+    const venueObj = comp.venue || {};
+    const venueName = venueObj.fullName || null;
+    const venueCity = venueObj.address?.city || null;
+    const venue = venueName
+      ? (venueCity && !venueName.includes(venueCity) ? `${venueName}, ${venueCity}` : venueName)
+      : null;
+    return {
+      toss: extractTossInfoESPN(data.notes),
+      lineups: extractLineupsESPN(data.rosters, data.notes),
+      headToHeadGames: data.headToHeadGames || null,
+      standings: data.standings?.children?.[0]?.standings?.entries || null,
+      venue,
+    };
+  } catch (e) {
+    return null;
+  }
+}
+
+// ─── ESPN Data Helpers (used by bot commands) ──────────────────────────────
+
+/** Resolve ESPN event ID for a match: live cache → results DB → events list */
+async function getESPNEventId(matchId, match) {
+  const cached = commentaryCache.get(matchId);
+  if (cached?.espnEventId) return cached.espnEventId;
+
+  const row = await queryOne('SELECT details FROM results WHERE match_id = $1', [matchId]);
+  if (row?.details) {
+    const d = typeof row.details === 'string' ? JSON.parse(row.details) : row.details;
+    if (d?.espnEventId) return d.espnEventId;
+  }
+
+  try {
+    const events = await fetchESPNAll();
+    const found = events.find(am => {
+      const t1 = am.team1.short, t2 = am.team2.short;
+      return (t1 === match.team1 && t2 === match.team2) ||
+        (t1 === match.team2 && t2 === match.team1);
+    });
+    return found?.espnEventId || null;
+  } catch (e) {
+    return null;
+  }
+}
+
+/** Fetch IPL points table from ESPN standings field. Resolves an event ID then calls fetchESPNSummary. */
+async function fetchESPNPointsTable(preferredEventId = null) {
+  let eventId = preferredEventId;
+
+  if (!eventId) {
+    for (const [, state] of commentaryCache.entries()) {
+      if (state.espnEventId) { eventId = state.espnEventId; break; }
+    }
+  }
+  if (!eventId) {
+    const row = await queryOne('SELECT details FROM results ORDER BY created_at DESC LIMIT 1');
+    if (row?.details) {
+      const d = typeof row.details === 'string' ? JSON.parse(row.details) : row.details;
+      eventId = d?.espnEventId;
+    }
+  }
+  if (!eventId) {
+    const events = await fetchESPNAll();
+    eventId = events[0]?.espnEventId;
+  }
+  if (!eventId) return null;
+
+  const summary = await fetchESPNSummary(eventId);
+  const entries = summary?.standings;
+  if (!entries) return null;
+
+  const stat = (e, name) => e.stats.find(s => s.name === name)?.displayValue ?? '-';
+  return entries.map(e => ({
+    rank: stat(e, 'rank'),
+    team: e.team.abbreviation,
+    m:    stat(e, 'matchesPlayed'),
+    w:    stat(e, 'matchesWon'),
+    l:    stat(e, 'matchesLost'),
+    nr:   stat(e, 'noresult'),
+    pts:  stat(e, 'matchPoints'),
+    nrr:  stat(e, 'netrr'),
+  }));
+}
+
+/** Format points table entries as a text block */
+function formatPointsTable(entries) {
+  const lines = ['🏆 IPL 2026 Points Table\n'];
+  lines.push('# Team   M  W  L NR Pts     NRR');
+  lines.push('─'.repeat(34));
+  for (const e of entries) {
+    const nrr = parseFloat(e.nrr);
+    const nrrStr = isNaN(nrr) ? e.nrr : (nrr >= 0 ? '+' + nrr.toFixed(3) : nrr.toFixed(3));
+    lines.push(
+      `${String(e.rank).padEnd(2)} ${e.team.padEnd(5)} ${String(e.m).padStart(2)} ` +
+      `${String(e.w).padStart(2)} ${String(e.l).padStart(2)} ${String(e.nr).padStart(2)} ` +
+      `${String(e.pts).padStart(3)} ${nrrStr.padStart(8)}`
+    );
+  }
+  return lines.join('\n');
+}
+
+/** Fetch ESPN matchcard data (batting + bowling) for a given event */
+async function fetchESPNScorecard(espnEventId) {
+  const resp = await axios.get(`${ESPN_IPL_BASE}/summary?event=${espnEventId}`, { timeout: 8000 });
+  const matchcards = resp.data?.matchcards || [];
+  const header = resp.data?.header?.competitions?.[0];
+  const status = header?.status?.type?.description || '';
+
+  const innings = {};
+  for (const mc of matchcards) {
+    const k = mc.inningsNumber;
+    if (!innings[k]) innings[k] = { teamName: mc.teamName };
+    if (mc.headline === 'Batting') innings[k].batting = mc;
+    if (mc.headline === 'Bowling') innings[k].bowling = mc;
+  }
+  return { innings, status };
+}
+
+/** Format batting + bowling innings block as text */
+function formatScorecardText(innings, matchTitle) {
+  const lines = [`📋 Scorecard — ${matchTitle}`];
+  for (const [, inns] of Object.entries(innings).sort()) {
+    const mc = inns.batting;
+    if (!mc) continue;
+    lines.push('');
+    lines.push(`━━ ${mc.teamName} — ${mc.runs ?? '?'} ${mc.total ?? ''} ━━`);
+    if (mc.extras) lines.push(`Extras: ${mc.extras}`);
+    lines.push('');
+    for (const p of mc.playerDetails.filter(p => p.runs !== '')) {
+      const dis = p.dismissal || 'not out';
+      const sr = p.ballsFaced > 0
+        ? ((p.runs / p.ballsFaced) * 100).toFixed(1)
+        : '-';
+      lines.push(`${p.playerName.padEnd(19)} ${dis.padEnd(14)} ${String(p.runs).padStart(3)}(${p.ballsFaced}) 4s:${p.fours} 6s:${p.sixes} SR:${sr}`);
+    }
+    if (inns.bowling) {
+      lines.push('');
+      lines.push('Bowling:');
+      for (const p of inns.bowling.playerDetails) {
+        lines.push(`${p.playerName.padEnd(19)} ${String(p.overs).padStart(4)}ov  ${p.wickets}w  ${String(p.conceded).padStart(3)}r  econ:${p.economyRate}`);
+      }
+    }
+  }
+  return lines.join('\n');
+}
+
+/** Format ESPN headToHeadGames array into a readable H2H block */
+function formatH2HFromESPN(h2hGames, t1, t2) {
+  const lines = [`🤝 ${t1} vs ${t2} — Head to Head\n`];
+  let t1Wins = 0, t2Wins = 0, nr = 0;
+
+  for (const game of [...h2hGames].reverse()) { // oldest first
+    const dateStr = game.date
+      ? new Date(game.date).toLocaleDateString('en-IN', {
+          day: 'numeric', month: 'short', year: 'numeric', timeZone: 'Asia/Kolkata',
+        })
+      : '?';
+    const resultSummary = game.status?.summary || game.name || '';
+    const winnerComp = Array.isArray(game.competitors)
+      ? game.competitors.find(c => c.winner)
+      : null;
+    const winnerFull = winnerComp?.displayName || null;
+    const winnerAbbr = winnerFull ? (TEAM_NAME_MAP[winnerFull] || teamAbbr(winnerFull)) : null;
+
+    if (!winnerAbbr) {
+      nr++;
+      lines.push(`📅 ${dateStr} — 🌧️ No Result`);
+    } else {
+      if (winnerAbbr === t1) t1Wins++;
+      else if (winnerAbbr === t2) t2Wins++;
+      lines.push(`📅 ${dateStr} — 🏆 ${winnerAbbr} won${resultSummary ? ` (${resultSummary})` : ''}`);
+    }
+  }
+
+  lines.push('');
+  lines.push(`📊 ${t1} ${t1Wins}  —  ${t2Wins} ${t2}${nr ? `  (${nr} NR)` : ''}`);
+  if (t1Wins > t2Wins) lines.push(`${t1} leads 💪`);
+  else if (t2Wins > t1Wins) lines.push(`${t2} leads 💪`);
+  else if (t1Wins + t2Wins + nr > 0) lines.push(`Level pegging! 🤝`);
+
+  return lines.join('\n');
 }
 
 /** Auto-sync only runs from (match start + 4h) through (match start + 6h), every CHECK_INTERVAL. */
@@ -1566,27 +1789,22 @@ async function checkRecentMatches(isManual = false) {
     const toCheck = pendingMatches.filter(m => !existingIds.has(m.id));
     if (toCheck.length === 0) return { updated: 0, checked: 0 };
 
-    console.log(`🔍 AutomatedResultService: Checking ${toCheck.length} pending matches via Cricbuzz...`);
+    console.log(`🔍 AutomatedResultService: Checking ${toCheck.length} pending matches via ESPN...`);
     let updatedCount = 0;
 
-    // Fetch from Cricbuzz unofficial API (live + recent)
-    const allMatches = await fetchCricbuzzAll();
+    // Fetch from ESPN Cricinfo API (free, no key)
+    const allMatches = await fetchESPNAll();
     if (allMatches.length === 0) {
-      console.log("⚠️  AutomatedResultService: No matches returned from Cricbuzz.");
+      console.log("⚠️  AutomatedResultService: No matches returned from ESPN.");
     }
 
     for (const match of toCheck) {
       const matchDateStr = match.date;
 
       const apiMatch = allMatches.find(am => {
-        const mi = am.matchInfo;
-        if (!mi?.team1?.teamName || !mi?.team2?.teamName) return false;
-        // Match by date (startDate is Unix ms string) and teams
-        const amDate = mi.startDate
-          ? new Date(parseInt(mi.startDate)).toISOString().split('T')[0]
-          : null;
-        const t1 = TEAM_NAME_MAP[mi.team1.teamName];
-        const t2 = TEAM_NAME_MAP[mi.team2.teamName];
+        const t1 = am.team1.short;
+        const t2 = am.team2.short;
+        const amDate = am.startDateISO ? am.startDateISO.split('T')[0] : null;
         const teamsMatch =
           (t1 === match.team1 && t2 === match.team2) ||
           (t1 === match.team2 && t2 === match.team1);
@@ -1594,26 +1812,31 @@ async function checkRecentMatches(isManual = false) {
       });
 
       if (!apiMatch) {
-        console.log(`❓ AutomatedResultService: Could not find ${match.id} (${match.team1} vs ${match.team2}) on Cricbuzz.`);
+        console.log(`❓ AutomatedResultService: Could not find ${match.id} (${match.team1} vs ${match.team2}) on ESPN.`);
         continue;
       }
 
-      const status = apiMatch.matchInfo.status || "";
-      const state = (apiMatch.matchInfo.state || "").toString();
+      const status = apiMatch.status || "";
+      const state = apiMatch.state || "pre";
 
       const stateDone =
-        /^complete|result$/i.test(state) ||
+        state === 'post' ||
         status.includes("won by") ||
         status.includes("Match abandoned");
 
       if (stateDone) {
-        const winner = parseWinnerFromStatus(status, match.team1, match.team2);
+        const winner = parseWinnerFromStatus(status, match.team1, match.team2) ||
+          (apiMatch.winnerName ? (TEAM_NAME_MAP[apiMatch.winnerName] || null) : null);
         if (winner) {
-          const scoreSummary = extractScoreSummary(apiMatch.matchInfo);
-          const toss = extractTossInfo(apiMatch.matchInfo);
+          const scoreSummary = extractScoreSummaryESPN(apiMatch);
+          const summary = await fetchESPNSummary(apiMatch.espnEventId);
+          const toss = summary?.toss || null;
           const matchDetails = {
-            matchInfo: apiMatch.matchInfo,
-            matchScore: apiMatch.matchScore,
+            espnEventId: apiMatch.espnEventId,
+            team1: apiMatch.team1,
+            team2: apiMatch.team2,
+            state: apiMatch.state,
+            status: apiMatch.status,
           };
           console.log(`🏆 AutomatedResultService: AUTO-DECLARING WINNER for ${match.id}: ${winner}${toss ? ` | ${toss}` : ''}`);
           await query(
@@ -1672,53 +1895,21 @@ setTimeout(checkRecentMatches, 5000); // 5 sec delay to let DB init completion
 // ─── Live Score Service ────────────────────────────────────────────────────
 
 const liveScoreCache = new Map(); // ourMatchId -> LiveScorePayload
-const commentaryCache = new Map(); // ourMatchId -> { cricbuzzMatchId, lastTs }
+const commentaryCache = new Map(); // ourMatchId -> { espnEventId, lastTs, toss, lineups }
+const rainDelayState = new Map();  // ourMatchId -> { inDelay: bool, lastPostedAt: number }
 
-function formatScoreFromMatchData(ourMatch, apiMatch) {
-  const { matchInfo, matchScore } = apiMatch;
-  const status = (matchInfo.status || '').trim();
-
-  function scoreStr(teamShort, inngsObj, teamInfoObj) {
-    if (inngsObj && inngsObj.runs != null) {
-      const ov = inngsObj.overs != null ? inngsObj.overs : (inngsObj.overNbr != null ? inngsObj.overNbr : null);
-      return `${teamShort} ${inngsObj.runs}/${inngsObj.wickets ?? 0}${ov != null ? ` (${ov})` : ''}`;
-    }
-    if (teamInfoObj && teamInfoObj.score != null && Number(teamInfoObj.score) >= 0 && Number(teamInfoObj.score) !== -1) {
-      const ov = teamInfoObj.overs ?? teamInfoObj.overNbr ?? teamInfoObj.oversText ?? null;
-      return `${teamShort} ${teamInfoObj.score}/${teamInfoObj.wickets ?? 0}${ov != null ? ` (${ov})` : ''}`;
-    }
-    return null;
-  }
-
-  const t1Short = TEAM_NAME_MAP[matchInfo.team1?.teamName] || matchInfo.team1?.teamSName || ourMatch.team1;
-  const t2Short = TEAM_NAME_MAP[matchInfo.team2?.teamName] || matchInfo.team2?.teamSName || ourMatch.team2;
-
-  const t1Score = scoreStr(t1Short, matchScore?.team1Score?.inngs1, matchInfo.team1) ||
-    scoreStr(t1Short, matchScore?.team1Score?.inngs2, null);
-  const t2Score = scoreStr(t2Short, matchScore?.team2Score?.inngs1, matchInfo.team2) ||
-    scoreStr(t2Short, matchScore?.team2Score?.inngs2, null);
-
-  const parts = [t1Score, t2Score].filter(Boolean);
+/** Build score/status from an ESPN normalized match object */
+function buildScoreFromESPNMatch(espnMatch, ourMatch) {
+  const t1Short = espnMatch.team1.short || ourMatch.team1;
+  const t2Short = espnMatch.team2.short || ourMatch.team2;
+  const parts = [];
+  if (espnMatch.team1.score) parts.push(`${t1Short} ${espnMatch.team1.score}`);
+  if (espnMatch.team2.score) parts.push(`${t2Short} ${espnMatch.team2.score}`);
   return {
     score: parts.join(' · ') || null,
-    status: status || null,
-    toss: extractTossInfo(matchInfo),
+    status: espnMatch.status || null,
+    toss: null, // ESPN events endpoint does not expose toss
   };
-}
-
-async function fetchLiveMatchData() {
-  // Cricbuzz unofficial web API — free, no key required
-  const resp = await axios.get('https://www.cricbuzz.com/api/cricket-match/live', {
-    headers: {
-      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-      'Accept': 'application/json',
-      'Accept-Language': 'en-US,en;q=0.9',
-      'Referer': 'https://www.cricbuzz.com/',
-      'Origin': 'https://www.cricbuzz.com',
-    },
-    timeout: 10000,
-  });
-  return collectCricbuzzMatchesFromPayload(resp.data);
 }
 
 async function pollLiveScores() {
@@ -1741,31 +1932,34 @@ async function pollLiveScores() {
 
     if (liveMatches.length === 0) return;
 
-    const apiMatches = await fetchLiveMatchData();
+    const apiMatches = await fetchESPNAll();
 
     for (const match of liveMatches) {
       const apiMatch = apiMatches.find(am => {
-        const mi = am.matchInfo;
-        if (!mi) return false;
-        const t1 = TEAM_NAME_MAP[mi.team1?.teamName];
-        const t2 = TEAM_NAME_MAP[mi.team2?.teamName];
+        const t1 = am.team1.short;
+        const t2 = am.team2.short;
         return (t1 === match.team1 && t2 === match.team2) ||
           (t1 === match.team2 && t2 === match.team1);
       });
 
       if (!apiMatch) continue;
 
-      const { score, status, toss } = formatScoreFromMatchData(match, apiMatch);
+      const { score, status, toss } = buildScoreFromESPNMatch(apiMatch, match);
 
-      // Seed commentaryCache with Cricbuzz match ID (first time we see this match live)
-      const cricbuzzId = apiMatch.matchInfo?.matchId;
-      if (cricbuzzId && !commentaryCache.has(match.id)) {
-        commentaryCache.set(match.id, {
-          cricbuzzMatchId: String(cricbuzzId),
-          lastTs: Date.now() - 120000, // catch last 2 min on first poll
+      // Seed commentaryCache with ESPN event ID (first time we see this match live)
+      if (apiMatch.espnEventId && !commentaryCache.has(match.id)) {
+        const entry = { espnEventId: apiMatch.espnEventId, lastTs: 0, toss: null, lineups: null };
+        commentaryCache.set(match.id, entry);
+        console.log(`[Commentary] Registered match ${match.id} → ESPN ID ${apiMatch.espnEventId}`);
+        // Fetch toss + lineups from summary in background; available on next poll cycle
+        fetchESPNSummary(apiMatch.espnEventId).then(d => {
+          if (d?.toss) entry.toss = d.toss;
+          if (d?.lineups) entry.lineups = d.lineups;
         });
-        console.log(`[Commentary] Registered match ${match.id} → Cricbuzz ID ${cricbuzzId}`);
       }
+
+      const cachedEntry = commentaryCache.get(match.id);
+      const liveToss = cachedEntry?.toss || null;
 
       const payload = {
         matchId: match.id,
@@ -1773,7 +1967,7 @@ async function pollLiveScores() {
         team2: match.team2,
         score: score || null,
         status: status || null,
-        toss: toss || null,
+        toss: liveToss,
         updatedAt: new Date().toISOString(),
       };
 
@@ -1781,16 +1975,53 @@ async function pollLiveScores() {
       io.emit('live_score', payload);
       console.log(`[LiveScore] ${match.id}: ${score || 'no score'} | ${status || 'no status'}`);
 
-      // Post toss announcement once when toss info first appears
-      if (toss && !tossPostedSet.has(match.id)) {
+      // Post toss + XI announcement once when toss info first appears
+      if (liveToss && !tossPostedSet.has(match.id)) {
         tossPostedSet.add(match.id);
         if (await isBotEnabled(match.id)) {
           const allRooms = await query('SELECT id FROM rooms');
           const botName = getBotName(match.id);
+          const tossMsg = formatTossMessage(liveToss, cachedEntry?.lineups);
           for (const room of allRooms) {
-            await postBotMessage(room.id, match.id, `🪙 ${toss}`, botName);
+            await postBotMessage(room.id, match.id, tossMsg, botName);
           }
         }
+      }
+
+      // ── Rain / delay detection ──────────────────────────────────────────────
+      const RAIN_KEYWORDS = /rain|delay|interrupt|suspend|wet outfield|bad light|pitch inspection/i;
+      const isRainStatus = RAIN_KEYWORDS.test(status || '');
+      const rainState = rainDelayState.get(match.id) || { inDelay: false, lastPostedAt: 0 };
+      const nowMs = Date.now();
+
+      if (isRainStatus) {
+        // Re-post every 10 min while delay persists so late joiners see the update
+        const shouldPost = !rainState.inDelay ||
+          (nowMs - rainState.lastPostedAt > 10 * 60 * 1000);
+        if (shouldPost && await isBotEnabled(match.id)) {
+          const botName = getBotName(match.id);
+          const delayMsg = `🌧️ Play Interrupted!\n\n${match.team1} vs ${match.team2}\n📊 ${status}\n\nI'll resume ball-by-ball updates the moment play gets back underway! ⏸️`;
+          const allRooms = await query('SELECT id FROM rooms');
+          for (const room of allRooms) {
+            await postBotMessage(room.id, match.id, delayMsg, botName);
+          }
+          rainDelayState.set(match.id, { inDelay: true, lastPostedAt: nowMs });
+          console.log(`[LiveScore] Rain delay posted for match ${match.id}`);
+        } else if (!rainState.inDelay) {
+          rainDelayState.set(match.id, { inDelay: true, lastPostedAt: nowMs });
+        }
+      } else if (rainState.inDelay) {
+        // Delay has lifted — post "play resumed"
+        if (await isBotEnabled(match.id)) {
+          const botName = getBotName(match.id);
+          const resumeMsg = `☀️ Play has resumed!\n\n${match.team1} vs ${match.team2} is back on! 🏏\n${score ? `📊 ${score}` : ''}\n\nBall-by-ball updates are live again! 🔥`;
+          const allRooms = await query('SELECT id FROM rooms');
+          for (const room of allRooms) {
+            await postBotMessage(room.id, match.id, resumeMsg, botName);
+          }
+          console.log(`[LiveScore] Play resumed posted for match ${match.id}`);
+        }
+        rainDelayState.set(match.id, { inDelay: false, lastPostedAt: 0 });
       }
     }
   } catch (err) {
@@ -1945,13 +2176,21 @@ async function isBotEnabled(matchId) {
 function getHelpText(botName) {
   return `🏏 Hi! I'm ${botName}. Here's what you can ask me:\n\n` +
     `📊 Match\n` +
+    `/match — teams, venue, toss & match status\n` +
     `/score — current score & status\n` +
+    `/scorecard — full batting & bowling scorecard\n` +
     `/batting — who's at the crease\n` +
     `/bowling — current bowler's figures\n` +
     `/rr — current run rate\n` +
     `/target — target (2nd innings)\n` +
     `/rrr — required run rate\n` +
     `/overs — overs remaining\n\n` +
+    `🗒️ Squads\n` +
+    `/{team}-lineup — playing XI & impact players (e.g. /rcb-lineup)\n` +
+    `/scorecard — full innings scorecard\n\n` +
+    `📈 Tournament\n` +
+    `/points-table — IPL standings with NRR\n` +
+    `/h2h — head-to-head record for today's teams\n\n` +
     `🏆 Room\n` +
     `/top — leaderboard top 5\n` +
     `/votes — vote split for this match\n` +
@@ -2119,18 +2358,20 @@ function getTeamMentionRoast(message, matchId) {
 
 async function fetchLatestBallData(matchId) {
   const state = commentaryCache.get(matchId);
-  if (!state?.cricbuzzMatchId) return null;
+  if (!state?.espnEventId) return null;
   try {
     const resp = await axios.get(
-      `https://www.cricbuzz.com/api/cricket-match/${state.cricbuzzMatchId}/full-commentary/1`,
-      { headers: CRICBUZZ_COMMENTARY_HEADERS, timeout: 8000 }
+      `${ESPN_IPL_BASE}/playbyplay?event=${state.espnEventId}`,
+      { timeout: 8000 }
     );
-    const commentary = resp.data?.commentary || [];
-    // Most recent real delivery (not over separator)
-    const balls = commentary.filter(b => !b.overSeparator && b.batsmanStriker);
-    const latest = balls[0] || null;
-    const miniscore = resp.data?.miniscore || resp.data?.matchScore || null;
-    return { latest, miniscore, commentary };
+    const items = resp.data?.commentary?.items || [];
+    const latest = items[0] || null;
+    // Use liveScoreCache for score info since ESPN playbyplay has no separate miniscore
+    const liveData = liveScoreCache.get(matchId);
+    const miniscore = liveData?.score
+      ? { batTeam: { teamSName: liveData.team1, score: liveData.score } }
+      : null;
+    return { latest, miniscore, commentary: items };
   } catch (e) {
     return null;
   }
@@ -2167,17 +2408,34 @@ async function handleBotQuery(roomId, matchId, rawQuery, askerUsername) {
   );
   const isCompleted = !!completedResult;
 
-  // Check if match hasn't started yet
+  // "First ball bowled" = any commentary has been received for this match
+  const commentaryState = commentaryCache.get(matchId);
+  const hasFirstBall = (commentaryState?.lastTs || 0) > 0;
+
   const matchStart = matchInfo
     ? new Date(`${matchInfo.date}T${matchInfo.time || '19:30'}:00+05:30`)
     : null;
-  const isNotStarted = !isCompleted && matchStart && new Date() < matchStart;
+
+  // isNotStarted: match not completed AND first ball not yet bowled
+  const isNotStarted = !isCompleted && !hasFirstBall;
+  // isDelayed: scheduled time has passed but first ball still not bowled
+  const isDelayed = isNotStarted && matchStart && new Date() >= matchStart;
+
   const preStartReply = isNotStarted
     ? (() => {
-      const timeStr = matchStart.toLocaleTimeString('en-IN', {
+      if (isDelayed) {
+        const currentStatus = liveData?.status || '';
+        const isRain = /rain|delay|interrupt|suspend|wet|bad light/i.test(currentStatus);
+        if (isRain) {
+          return `🌧️ Play is currently stopped due to rain/interruption!\n\n${t1} vs ${t2}\n📊 ${currentStatus}\n\nI'll go live with ball-by-ball updates the moment play resumes! 🏏`;
+        }
+        return `⏳ ${t1} vs ${t2} — we're at the venue but waiting for the first ball!\n\nStay tuned, I'll kick off live updates the moment play begins! 🏏🔥`;
+      }
+      // Before scheduled time
+      const timeStr = matchStart?.toLocaleTimeString('en-IN', {
         hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Kolkata',
       });
-      const dateStr = matchStart.toLocaleDateString('en-IN', {
+      const dateStr = matchStart?.toLocaleDateString('en-IN', {
         weekday: 'short', day: 'numeric', month: 'short', timeZone: 'Asia/Kolkata',
       });
       return `⏳ The match hasn't started yet!\n\n${t1} vs ${t2} kicks off on ${dateStr} at ${timeStr} IST.\n\nI'll go live with ball-by-ball updates the moment the first ball is bowled. Stay tuned! 🏏🔥`;
@@ -2192,7 +2450,7 @@ async function handleBotQuery(roomId, matchId, rawQuery, askerUsername) {
   }
 
   // ── score ─────────────────────────────────────────────────────────────────
-  else if (['score', 'scorecard'].includes(q)) {
+  else if (q === 'score') {
     if (isCompleted) {
       const { score_summary, toss } = completedResult;
       reply = `📊 Final Scorecard — ${t1} vs ${t2}`;
@@ -2230,7 +2488,28 @@ async function handleBotQuery(roomId, matchId, rawQuery, askerUsername) {
   // ── batting ───────────────────────────────────────────────────────────────
   else if (['batting', 'bat', 'batsman', 'batter', "who's batting", 'who is batting'].includes(q)) {
     if (isCompleted) {
-      reply = `Match is over! Check the result with /score`;
+      try {
+        const espnId = await getESPNEventId(matchId, matchInfo);
+        if (!espnId) throw new Error('no ESPN ID');
+        const { innings } = await fetchESPNScorecard(espnId);
+        const keys = Object.keys(innings).sort();
+        if (!keys.length) throw new Error('empty');
+        const lines = [`🏏 Batting — ${t1} vs ${t2}\n`];
+        for (const k of keys) {
+          const mc = innings[k].batting;
+          if (!mc) continue;
+          lines.push(`━━ ${mc.teamName} — ${mc.runs ?? '?'} ${mc.total ?? ''} ━━`);
+          for (const p of mc.playerDetails.filter(p => p.runs !== '')) {
+            const sr = p.ballsFaced > 0 ? ((p.runs / p.ballsFaced) * 100).toFixed(1) : '-';
+            lines.push(`${p.playerName.padEnd(18)} ${String(p.runs).padStart(3)}(${p.ballsFaced})  SR:${sr}  ${(p.dismissal || 'not out').slice(0, 16)}`);
+          }
+          if (mc.extras) lines.push(`Extras: ${mc.extras}`);
+          lines.push('');
+        }
+        reply = lines.join('\n').trimEnd();
+      } catch {
+        reply = `📋 ${t1} vs ${t2} — Match result\n${completedResult.score_summary || completedResult.winner + ' won'}`;
+      }
     } else if (isNotStarted) {
       reply = preStartReply;
     } else {
@@ -2254,7 +2533,27 @@ async function handleBotQuery(roomId, matchId, rawQuery, askerUsername) {
   // ── bowling ───────────────────────────────────────────────────────────────
   else if (['bowling', 'bowl', 'bowler', "who's bowling", 'who is bowling'].includes(q)) {
     if (isCompleted) {
-      reply = `Match is over! Check the result with /score`;
+      try {
+        const espnId = await getESPNEventId(matchId, matchInfo);
+        if (!espnId) throw new Error('no ESPN ID');
+        const { innings } = await fetchESPNScorecard(espnId);
+        const keys = Object.keys(innings).sort();
+        if (!keys.length) throw new Error('empty');
+        const lines = [`⚾ Bowling — ${t1} vs ${t2}\n`];
+        for (const k of keys) {
+          const inns = innings[k];
+          if (!inns.bowling) continue;
+          const mc = inns.bowling;
+          lines.push(`━━ vs ${inns.batting?.teamName || mc.teamName} ━━`);
+          for (const p of mc.playerDetails) {
+            lines.push(`${p.playerName.padEnd(18)} ${String(p.overs).padStart(4)}ov  ${p.wickets}w  ${String(p.conceded).padStart(3)}r  econ:${p.economyRate}`);
+          }
+          lines.push('');
+        }
+        reply = lines.join('\n').trimEnd();
+      } catch {
+        reply = `📋 ${t1} vs ${t2} — Match result\n${completedResult.score_summary || completedResult.winner + ' won'}`;
+      }
     } else if (isNotStarted) {
       reply = preStartReply;
     } else {
@@ -2272,7 +2571,8 @@ async function handleBotQuery(roomId, matchId, rawQuery, askerUsername) {
   // ── run rate ─────────────────────────────────────────────────────────────
   else if (['rr', 'crr', 'run rate', 'current run rate'].includes(q)) {
     if (isCompleted) {
-      reply = `Match is over! Check the result with /score`;
+      const { score_summary, winner } = completedResult;
+      reply = `Match is over — no live run rate.\n\n${score_summary || (winner + ' won')}\n\nUse /scorecard for full innings stats 📋`;
     } else if (isNotStarted) {
       reply = preStartReply;
     } else {
@@ -2289,7 +2589,18 @@ async function handleBotQuery(roomId, matchId, rawQuery, askerUsername) {
   // ── target ────────────────────────────────────────────────────────────────
   else if (['target', 'what is the target', "what's the target"].includes(q)) {
     if (isCompleted) {
-      reply = `Match is over! Check the result with /score`;
+      const { score_summary, winner } = completedResult;
+      // score_summary looks like "RR: 187/4 · RCB: 145/8\nRR won by 42 runs"
+      // Extract first innings runs to derive the target
+      let targetLine = '';
+      if (score_summary) {
+        const m = score_summary.match(/(\d+)\/\d+[^·\n]*·[^·\n]*(\d+)\/\d+/);
+        if (m) {
+          const target = parseInt(m[1], 10) + 1;
+          targetLine = `\n🎯 Target was ${target} runs`;
+        }
+      }
+      reply = `Match completed.\n${score_summary || winner + ' won'}${targetLine}`;
     } else if (isNotStarted) {
       reply = preStartReply;
     } else {
@@ -2306,7 +2617,8 @@ async function handleBotQuery(roomId, matchId, rawQuery, askerUsername) {
   // ── required rate ─────────────────────────────────────────────────────────
   else if (['rrr', 'required rate', 'required run rate'].includes(q)) {
     if (isCompleted) {
-      reply = `Match is over! Check the result with /score`;
+      const { score_summary, winner } = completedResult;
+      reply = `Match is over — no required run rate.\n\n${score_summary || winner + ' won'}\n\nUse /scorecard for full innings stats 📋`;
     } else if (isNotStarted) {
       reply = preStartReply;
     } else {
@@ -2323,7 +2635,8 @@ async function handleBotQuery(roomId, matchId, rawQuery, askerUsername) {
   // ── overs left ────────────────────────────────────────────────────────────
   else if (['overs', 'overs left', 'overs remaining'].includes(q)) {
     if (isCompleted) {
-      reply = `Match is over! Check the result with /score`;
+      const { score_summary, winner } = completedResult;
+      reply = `Match is over — overs are all done!\n\n${score_summary || winner + ' won'}\n\nUse /scorecard for full innings breakdown 📋`;
     } else if (isNotStarted) {
       reply = preStartReply;
     } else {
@@ -2498,6 +2811,169 @@ ${context}`
     }
   }
 
+  // ── points table ─────────────────────────────────────────────────────────
+  else if (['points-table', 'points table', 'table', 'standings', 'pts'].includes(q)) {
+    try {
+      // Prefer current match's ESPN event ID so standings are always tournament-fresh
+      const preferredId = await getESPNEventId(matchId, matchInfo);
+      const entries = await fetchESPNPointsTable(preferredId || undefined);
+      if (!entries) {
+        reply = `Couldn't fetch the points table right now. Try again in a bit! 📊`;
+      } else {
+        reply = formatPointsTable(entries);
+      }
+    } catch (e) {
+      reply = `Failed to load points table: ${e.message}`;
+    }
+  }
+
+  // ── team lineup ──────────────────────────────────────────────────────────
+  else if (q.match(/^([a-z]+)-lineup$/) || q.match(/^lineup\s+([a-z]+)$/) || q === 'lineup') {
+    const teamMatch = q.match(/^([a-z]+)-lineup$/) || q.match(/^lineup\s+([a-z]+)$/);
+    const teamArg = teamMatch ? teamMatch[1].toUpperCase() : null;
+
+    const espnId = await getESPNEventId(matchId, matchInfo);
+    if (!espnId) {
+      reply = `Lineups aren't available yet — check back once the toss is done! 🪙`;
+    } else {
+      try {
+        const summary = await fetchESPNSummary(espnId);
+        const lineups = summary?.lineups;
+        const hasToss = !!summary?.toss;
+        if (!lineups?.length) {
+          reply = `Playing XIs haven't been announced yet — check back after the toss! 🪙`;
+        } else if (teamArg) {
+          const team = lineups.find(l => l.abbr === teamArg);
+          if (!team) {
+            reply = `Team *${teamArg}* is not playing in this match!\nTeams: ${lineups.map(l => l.abbr).join(' vs ')}`;
+          } else {
+            const lines = hasToss
+              ? [`🪙 ${summary.toss}`, '', `🏏 ${team.abbr} Playing XI:`]
+              : [`🪙 Toss is yet to happen`, '', `🏏 ${team.abbr} Playing XI (announced before toss):`];
+            lines.push(team.xi.join(', '));
+            if (team.impactPool.length) lines.push(`⚡ Impact Players: ${team.impactPool.join(', ')}`);
+            reply = lines.join('\n');
+          }
+        } else {
+          if (!hasToss) {
+            const lines = [`🪙 Toss is yet to happen — here are the announced XIs:\n`];
+            for (const team of lineups) {
+              lines.push(`🏏 ${team.abbr} Playing XI:`);
+              lines.push(team.xi.join(', '));
+              if (team.impactPool.length) lines.push(`⚡ Impact Players: ${team.impactPool.join(', ')}`);
+              lines.push('');
+            }
+            reply = lines.join('\n').trimEnd();
+          } else {
+            reply = formatTossMessage(summary.toss, lineups);
+          }
+        }
+      } catch (e) {
+        reply = `Couldn't fetch lineup right now: ${e.message}`;
+      }
+    }
+  }
+
+  // ── scorecard ─────────────────────────────────────────────────────────────
+  else if (['scorecard', 'card', 'full scorecard', 'innings'].includes(q)) {
+    const espnId = await getESPNEventId(matchId, matchInfo);
+    if (!espnId) {
+      reply = `Scorecard isn't available yet — match hasn't started! 🏏`;
+    } else {
+      try {
+        const { innings, status } = await fetchESPNScorecard(espnId);
+        if (!Object.keys(innings).length) {
+          reply = `No scorecard data yet. Check back once the first ball is bowled! 🏏`;
+        } else {
+          const title = `${t1} vs ${t2}${status ? ' — ' + status : ''}`;
+          reply = formatScorecardText(innings, title);
+        }
+      } catch (e) {
+        reply = `Couldn't fetch scorecard right now: ${e.message}`;
+      }
+    }
+  }
+
+  // ── head to head ──────────────────────────────────────────────────────────
+  else if (['h2h', 'head to head', 'head-to-head', 'vs'].includes(q)) {
+    try {
+      const espnId = await getESPNEventId(matchId, matchInfo);
+      if (!espnId) {
+        reply = `I don't have enough head-to-head data for ${t1} vs ${t2} right now.`;
+      } else {
+        const summary = await fetchESPNSummary(espnId);
+        const h2hGames = summary?.headToHeadGames;
+        if (!h2hGames?.length) {
+          reply = `I don't have enough head-to-head data for ${t1} vs ${t2} right now.`;
+        } else {
+          reply = formatH2HFromESPN(h2hGames, t1, t2);
+        }
+      }
+    } catch (e) {
+      reply = `Couldn't fetch head-to-head data: ${e.message}`;
+    }
+  }
+
+  // ── match details ─────────────────────────────────────────────────────────
+  else if (['match', 'match info', 'match details', 'info'].includes(q)) {
+    try {
+      const espnId = await getESPNEventId(matchId, matchInfo);
+      const summary = espnId ? await fetchESPNSummary(espnId) : null;
+
+      // Venue: ESPN first, then static home-team fallback
+      const venue = summary?.venue || TEAM_HOME_VENUE[matchInfo?.team1] || 'Venue TBC';
+
+      // Date/time from schedule
+      const matchStartDt = matchStart;
+      const dateStr = matchStartDt
+        ? matchStartDt.toLocaleDateString('en-IN', {
+            weekday: 'long', day: 'numeric', month: 'long', year: 'numeric',
+            timeZone: 'Asia/Kolkata',
+          })
+        : 'Date TBC';
+      const timeStr = matchStartDt
+        ? matchStartDt.toLocaleTimeString('en-IN', {
+            hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Kolkata',
+          })
+        : '';
+
+      // Toss line
+      const tossLine = isCompleted
+        ? (completedResult.toss || 'Toss info unavailable')
+        : (summary?.toss || (commentaryCache.get(matchId)?.toss) || '🪙 Toss yet to happen');
+
+      // State label
+      const stateLabel = isCompleted
+        ? `✅ Completed — ${completedResult.winner === 'nr' ? 'No Result' : `${completedResult.winner} won`}`
+        : hasFirstBall
+          ? '🔴 Live'
+          : isDelayed
+            ? `⏸️ ${liveData?.status || 'Delayed / Not yet started'}`
+            : `🕐 Upcoming`;
+
+      const lines = [
+        `🏏 Match Details`,
+        ``,
+        `⚔️  ${t1} vs ${t2}`,
+        `📅  ${dateStr}${timeStr ? ' • ' + timeStr + ' IST' : ''}`,
+        `🏟️  ${venue}`,
+        `🪙  ${tossLine}`,
+        `📡  ${stateLabel}`,
+      ];
+
+      if (isCompleted && completedResult.score_summary) {
+        lines.push(`📊  ${completedResult.score_summary.split('\n').join('  ')}`);
+      } else if (!isCompleted && liveData?.score) {
+        lines.push(`📊  ${liveData.score}`);
+        if (liveData.status) lines.push(`ℹ️  ${liveData.status}`);
+      }
+
+      reply = lines.join('\n');
+    } catch (e) {
+      reply = `Couldn't fetch match details: ${e.message}`;
+    }
+  }
+
   // ── unknown ───────────────────────────────────────────────────────────────
   else {
     reply = `Didn't catch that 🤔 Type /help for commands or try /kira [your question]!`;
@@ -2510,13 +2986,53 @@ ${context}`
 
 // ─── Ball-by-ball Commentary ───────────────────────────────────────────────
 
-const CRICBUZZ_COMMENTARY_HEADERS = {
-  'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-  'Accept': 'application/json',
-  'Accept-Language': 'en-US,en;q=0.9',
-  'Referer': 'https://www.cricbuzz.com/',
-  'Origin': 'https://www.cricbuzz.com',
-};
+/** Format a single ESPN playbyplay item into a ball-by-ball chat message */
+function formatESPNCommentaryItem(item, matchScore) {
+  const shortText = (item.shortText || '').trim();  // "Shami to Allen, 1 run"
+  const commText = (item.text || '').replace(/<[^>]+>/g, '').trim(); // strip HTML
+  if (!shortText && !commText) return null;
+
+  // Over.ball: ESPN stores as decimal e.g. 0.1 = over 0 ball 1
+  const overOvers = item.over?.overs;
+  const overStr = overOvers != null ? `Over ${overOvers}` : null;
+
+  // Event label from structured fields
+  const isWicket = item.dismissal?.dismissal === true;
+  const scoreVal = item.scoreValue ?? 0;
+  const playType = (item.playType?.description || '').toLowerCase();
+  let eventLabel = '';
+  if (isWicket) eventLabel = '🔴 WICKET!';
+  else if (scoreVal === 6) eventLabel = '🏏 SIX!';
+  else if (scoreVal === 4) eventLabel = '🔵 FOUR!';
+  else if (playType === 'wide') eventLabel = '↔️ Wide';
+  else if (playType.includes('no ball')) eventLabel = '⚠️ No Ball';
+  else if (scoreVal === 0) eventLabel = '🔒 Dot';
+  else eventLabel = `+${scoreVal}`;
+
+  const line1 = [overStr, eventLabel].filter(Boolean).join('  •  ');
+
+  // Batter vs Bowler
+  const batter = item.batsman?.athlete?.shortName;
+  const batterRuns = item.batsman?.totalRuns ?? 0;
+  const batterBalls = item.batsman?.faced ?? 0;
+  const bowler = item.bowler?.athlete?.shortName;
+  const bowlerWkts = item.bowler?.wickets ?? 0;
+  const bowlerRuns = item.bowler?.conceded ?? 0;
+  const line2Parts = [];
+  if (batter) line2Parts.push(`🏏 ${batter} (${batterRuns}* off ${batterBalls})`);
+  if (bowler) line2Parts.push(`⚾ ${bowler} (${bowlerWkts}/${bowlerRuns})`);
+  const line2 = line2Parts.join('  vs  ');
+
+  // Score line: prefer liveScoreCache string, fall back to item's own innings data
+  let line3 = '';
+  if (matchScore) {
+    line3 = `📊 ${matchScore}`;
+  } else if (item.team?.abbreviation && item.innings?.totalRuns != null) {
+    line3 = `📊 ${item.team.abbreviation} ${item.innings.totalRuns}/${item.innings.wickets ?? 0} (${overOvers ?? '?'})`;
+  }
+
+  return [line1, line2, line3, shortText || commText].filter(Boolean).join('\n');
+}
 
 function formatBallMessage(ball, matchScore) {
   if (!ball) return null;
@@ -2594,53 +3110,39 @@ async function pollCommentary() {
     if (roomIds.length === 0) return;
 
     for (const [matchId, state] of commentaryCache.entries()) {
-      if (completedIds.has(matchId) || !state.cricbuzzMatchId) continue;
+      if (completedIds.has(matchId) || !state.espnEventId) continue;
       if (!await isBotEnabled(matchId)) continue;
 
       try {
         const resp = await axios.get(
-          `https://www.cricbuzz.com/api/cricket-match/${state.cricbuzzMatchId}/full-commentary/1`,
-          { headers: CRICBUZZ_COMMENTARY_HEADERS, timeout: 10000 }
+          `${ESPN_IPL_BASE}/playbyplay?event=${state.espnEventId}`,
+          { timeout: 10000 }
         );
-        const commentary = resp.data?.commentary || [];
+        const items = resp.data?.commentary?.items || [];
 
-        // Extract team score from response-level miniscore or matchScore
-        const miniscore = resp.data?.miniscore || resp.data?.matchScore;
-        let matchScoreStr = null;
-        if (miniscore) {
-          const batting = miniscore.batTeam || miniscore.inningScore;
-          if (batting) {
-            const teamName = batting.teamSName || batting.teamId || '';
-            const score = batting.score != null ? batting.score : null;
-            const wickets = batting.wickets != null ? batting.wickets : null;
-            const overs = batting.overs != null ? batting.overs : null;
-            if (score != null) {
-              matchScoreStr = teamName
-                ? `${teamName}: ${score}/${wickets ?? 0}${overs != null ? ` (${overs} ov)` : ''}`
-                : `${score}/${wickets ?? 0}${overs != null ? ` (${overs} ov)` : ''}`;
-            }
-          }
-        }
+        // Use live score from cache for the score line in each message
+        const liveData = liveScoreCache.get(matchId);
+        const matchScoreStr = liveData?.score || null;
 
-        // New balls since lastTs, ordered oldest → newest
-        const newBalls = commentary
-          .filter(b => (b.timestamp || 0) > state.lastTs)
-          .sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0));
+        // New items since lastTs — ESPN uses bbbTimestamp (Unix ms) per delivery
+        const newItems = items
+          .filter(b => (b.bbbTimestamp || 0) > (state.lastTs || 0))
+          .sort((a, b) => (a.bbbTimestamp || 0) - (b.bbbTimestamp || 0));
 
-        if (newBalls.length === 0) continue;
+        if (newItems.length === 0) continue;
 
         const botName = getBotName(matchId);
 
-        for (const ball of newBalls) {
-          const msg = formatBallMessage(ball, matchScoreStr);
+        for (const item of newItems) {
+          const msg = formatESPNCommentaryItem(item, matchScoreStr);
           if (!msg) continue;
           for (const roomId of roomIds) {
             await postBotMessage(roomId, matchId, msg, botName);
           }
-          state.lastTs = Math.max(state.lastTs, ball.timestamp || 0);
+          state.lastTs = Math.max(state.lastTs || 0, item.bbbTimestamp || 0);
         }
 
-        console.log(`[Commentary] Posted ${newBalls.length} ball(s) for match ${matchId}`);
+        console.log(`[Commentary] Posted ${newItems.length} ball(s) for match ${matchId}`);
       } catch (e) {
         console.error(`[Commentary] Error for match ${matchId}:`, e.message);
       }
