@@ -1,0 +1,25 @@
+src/lib/push.ts
+  a9fb2a6f60ac18db 37-51
+src/pages/Index.tsx
+  a9fb2a6f60ac18db 140-148
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.1.23",
+  "base_commit_sha": "0a4ad24494130f8216f202979a61077ce49a874a",
+  "prompts": {
+    "a9fb2a6f60ac18db": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "801f4827-c3ff-4df3-98c2-45a9fb5b0e39",
+        "model": "claude-sonnet-4-6"
+      },
+      "human_author": "Bheem Kollati <bheemkollati@gmail.com>",
+      "messages": [],
+      "total_additions": 24,
+      "total_deletions": 5,
+      "accepted_lines": 24,
+      "overriden_lines": 0
+    }
+  }
+}
