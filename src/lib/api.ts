@@ -402,4 +402,17 @@ export const api = {
   async removeRoomMember(roomId: number, userId: number): Promise<{ ok: boolean }> {
     return apiFetch(`/api/rooms/${roomId}/members/${userId}`, { method: 'DELETE' });
   },
+
+  // Push notifications
+  async getPushVapidKey(): Promise<{ publicKey: string }> {
+    return apiFetch('/api/push/vapid-public-key');
+  },
+
+  async subscribePush(subscription: { endpoint: string; keys: { p256dh: string; auth: string } }): Promise<void> {
+    return apiFetch('/api/push/subscribe', { method: 'POST', body: JSON.stringify(subscription) });
+  },
+
+  async unsubscribePush(endpoint: string): Promise<void> {
+    return apiFetch('/api/push/subscribe', { method: 'DELETE', body: JSON.stringify({ endpoint }) });
+  },
 };

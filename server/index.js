@@ -9,6 +9,7 @@ const { Pool } = require("pg");
 const http = require("http");
 const { Server } = require("socket.io");
 let matchesCache = require("./schedule");
+const webpush = require("web-push");
 
 async function isVotingLocked(matchId) {
   const match = matchesCache.find((m) => m.id === matchId);
@@ -308,6 +309,29 @@ async function initDb() {
     );
   `);
 
+  // VAPID keys (single-row; auto-generated on first startup)
+  await query(`
+    CREATE TABLE IF NOT EXISTS vapid_keys (
+      id INTEGER PRIMARY KEY DEFAULT 1,
+      public_key TEXT NOT NULL,
+      private_key TEXT NOT NULL,
+      created_at TIMESTAMPTZ DEFAULT NOW()
+    );
+  `);
+
+  // Push subscriptions (one row per browser/device per user)
+  await query(`
+    CREATE TABLE IF NOT EXISTS push_subscriptions (
+      id SERIAL PRIMARY KEY,
+      user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      endpoint TEXT NOT NULL UNIQUE,
+      p256dh TEXT NOT NULL,
+      auth TEXT NOT NULL,
+      created_at TIMESTAMPTZ DEFAULT NOW()
+    );
+  `);
+  await query(`CREATE INDEX IF NOT EXISTS idx_push_subs_user ON push_subscriptions(user_id);`);
+
   // Matches table (stores IPL schedule, synced from ESPN)
   await query(`
     CREATE TABLE IF NOT EXISTS matches (
@@ -362,6 +386,67 @@ async function initDb() {
   // Auto-adding on every startup was causing removed users to be re-added.
 }
 
+// ─── Push Notification Setup ──────────────────────────────────────────────────
+
+let VAPID_PUBLIC_KEY = null;
+
+async function initVapid() {
+  let keys = await queryOne('SELECT public_key, private_key FROM vapid_keys WHERE id = 1');
+  if (!keys) {
+    const generated = webpush.generateVAPIDKeys();
+    await query(
+      `INSERT INTO vapid_keys (id, public_key, private_key) VALUES (1, $1, $2) ON CONFLICT (id) DO NOTHING`,
+      [generated.publicKey, generated.privateKey]
+    );
+    keys = { public_key: generated.publicKey, private_key: generated.privateKey };
+    console.log('[Push] Generated new VAPID keys');
+  }
+  webpush.setVapidDetails(
+    'mailto:admin@ipl-predictor.app',
+    keys.public_key,
+    keys.private_key
+  );
+  VAPID_PUBLIC_KEY = keys.public_key;
+  console.log('[Push] VAPID configured');
+}
+
+async function sendPushToUser(userId, payload) {
+  const subs = await query(
+    'SELECT endpoint, p256dh, auth FROM push_subscriptions WHERE user_id = $1',
+    [userId]
+  );
+  for (const sub of subs) {
+    try {
+      await webpush.sendNotification(
+        { endpoint: sub.endpoint, keys: { p256dh: sub.p256dh, auth: sub.auth } },
+        JSON.stringify(payload)
+      );
+    } catch (e) {
+      if (e.statusCode === 410 || e.statusCode === 404) {
+        await query('DELETE FROM push_subscriptions WHERE endpoint = $1', [sub.endpoint]);
+      } else {
+        console.error('[Push] Failed for user', userId, ':', e.message);
+      }
+    }
+  }
+}
+
+async function broadcastPush(payload) {
+  const subs = await query('SELECT endpoint, p256dh, auth FROM push_subscriptions');
+  for (const sub of subs) {
+    try {
+      await webpush.sendNotification(
+        { endpoint: sub.endpoint, keys: { p256dh: sub.p256dh, auth: sub.auth } },
+        JSON.stringify(payload)
+      );
+    } catch (e) {
+      if (e.statusCode === 410 || e.statusCode === 404) {
+        await query('DELETE FROM push_subscriptions WHERE endpoint = $1', [sub.endpoint]);
+      }
+    }
+  }
+}
+
 app.use(cors());
 app.use(express.json());
 
@@ -387,6 +472,47 @@ function securityMiddleware(req, res, next) {
     return res.status(403).json({ error: "Access denied. Use the official application to perform this action." });
   }
   next();
+}
+
+// ─── Push Notification Routes ─────────────────────────────────────────────────
+
+app.get('/api/push/vapid-public-key', (req, res) => {
+  if (!VAPID_PUBLIC_KEY) return res.status(503).json({ error: 'Push not ready' });
+  res.json({ publicKey: VAPID_PUBLIC_KEY });
+});
+
+app.post('/api/push/subscribe', authMiddleware, asyncRouteEarly(async (req, res) => {
+  const { endpoint, keys } = req.body;
+  if (!endpoint || !keys?.p256dh || !keys?.auth) {
+    return res.status(400).json({ error: 'Invalid subscription payload' });
+  }
+  await query(
+    `INSERT INTO push_subscriptions (user_id, endpoint, p256dh, auth)
+     VALUES ($1, $2, $3, $4)
+     ON CONFLICT (endpoint) DO UPDATE
+       SET user_id = EXCLUDED.user_id,
+           p256dh  = EXCLUDED.p256dh,
+           auth    = EXCLUDED.auth`,
+    [req.user.id, endpoint, keys.p256dh, keys.auth]
+  );
+  res.json({ ok: true });
+}));
+
+app.delete('/api/push/subscribe', authMiddleware, asyncRouteEarly(async (req, res) => {
+  const { endpoint } = req.body;
+  if (!endpoint) return res.status(400).json({ error: 'endpoint required' });
+  await query(
+    'DELETE FROM push_subscriptions WHERE endpoint = $1 AND user_id = $2',
+    [endpoint, req.user.id]
+  );
+  res.json({ ok: true });
+}));
+
+// asyncRouteEarly — identical to asyncRoute but defined before it for the push routes above
+function asyncRouteEarly(handler) {
+  return (req, res, next) => {
+    Promise.resolve(handler(req, res, next)).catch((err) => { console.error(err); next(err); });
+  };
 }
 
 function asyncRoute(handler) {
@@ -512,6 +638,85 @@ io.on("connection", (socket) => {
       };
 
       io.to(`chat_${roomId}_${matchId}`).emit("new_message", payload);
+
+      // Push notifications to room members not currently in the chat
+      if (VAPID_PUBLIC_KEY) {
+        const roomKey = `chat_${roomId}_${matchId}`;
+        const activeSocketRoom = io.sockets.adapter.rooms.get(roomKey);
+        const onlineUserIds = new Set();
+        if (activeSocketRoom) {
+          for (const sid of activeSocketRoom) {
+            const sock = io.sockets.sockets.get(sid);
+            if (sock?.user?.id) onlineUserIds.add(sock.user.id);
+          }
+        }
+
+        const [members, roomRow] = await Promise.all([
+          query('SELECT user_id FROM room_members WHERE room_id = $1', [roomId]),
+          queryOne('SELECT name FROM rooms WHERE id = $1', [roomId]),
+        ]);
+        const roomName = roomRow?.name ?? 'Room';
+        const matchInfo = matchesCache.find(m => m.id === matchId);
+        const matchLabel = matchInfo ? `${matchInfo.team1} vs ${matchInfo.team2}` : 'Live Match';
+        const preview = msg.length > 80 ? msg.slice(0, 80) + '…' : msg;
+
+        // Resolve who owns the replied-to message (if any)
+        let replyTargetUserId = null;
+        if (saved.reply_to_id) {
+          const replyOwner = await queryOne(
+            'SELECT user_id FROM chat_messages WHERE id = $1',
+            [saved.reply_to_id]
+          );
+          replyTargetUserId = replyOwner?.user_id ?? null;
+        }
+
+        // Parse @mentions from the message text
+        const mentionedHandles = new Set(
+          [...msg.matchAll(/@([\w]+)/g)].map(m => m[1].toLowerCase())
+        );
+        const memberUserIds = new Set(members.map(m => m.user_id));
+        let mentionedUserIds = new Set();
+        if (mentionedHandles.size > 0) {
+          const rows = await query(
+            `SELECT id FROM users WHERE LOWER(username) = ANY($1) AND id != $2`,
+            [[...mentionedHandles], socket.user.id]
+          );
+          // Only notify members of this room
+          mentionedUserIds = new Set(rows.map(r => r.id).filter(id => memberUserIds.has(id)));
+        }
+
+        for (const member of members) {
+          if (member.user_id === socket.user.id) continue;
+
+          const isMentioned = mentionedUserIds.has(member.user_id);
+          const isReplyToMember = replyTargetUserId === member.user_id;
+          const isOffline = !onlineUserIds.has(member.user_id);
+
+          // Mentions and replies always notify; other messages only notify offline members
+          if (!isMentioned && !isReplyToMember && !isOffline) continue;
+
+          let title;
+          if (isMentioned) {
+            title = `${socket.user.username} mentioned you in ${roomName}`;
+          } else if (isReplyToMember) {
+            title = `${socket.user.username} replied to you in ${roomName}`;
+          } else {
+            title = `${socket.user.username} · ${roomName}`;
+          }
+
+          sendPushToUser(member.user_id, {
+            title,
+            body: preview,
+            icon: '/favicon.ico',
+            tag: `chat_${roomId}_${matchId}`,
+            data: {
+              url: `/chat/${roomId}/${matchId}`,
+              roomName,
+              sender: socket.user.username,
+            },
+          }).catch(() => {});
+        }
+      }
 
     } catch (e) {
       console.error("Chat Error:", e);
@@ -2538,6 +2743,21 @@ async function checkRecentMatches(isManual = false) {
           invalidateResultsCache();
           io.emit('result_updated', { matchId: match.id, winner });
 
+          // Push notification to all subscribed users
+          let pushTitle, pushBody;
+          if (winner === 'nr') {
+            pushTitle = '🌧️ Match Abandoned';
+            pushBody = `${match.team1} vs ${match.team2} — No Result`;
+          } else if (winner === 'draw') {
+            pushTitle = '🤝 It\'s a Tie!';
+            pushBody = `${match.team1} vs ${match.team2}`;
+          } else {
+            pushTitle = `🏆 ${winner} Won!`;
+            pushBody = scoreSummary || `${match.team1} vs ${match.team2}`;
+          }
+          broadcastPush({ title: pushTitle, body: pushBody, icon: '/favicon.ico', tag: `result_${match.id}`, data: { url: '/' } })
+            .catch(e => console.error('[Push] Broadcast failed:', e.message));
+
           // Post win announcement to all rooms (once per match)
           if (!winPostedSet.has(match.id) && await isBotEnabled(match.id)) {
             winPostedSet.add(match.id);
@@ -2577,6 +2797,42 @@ setInterval(checkRecentMatches, CHECK_INTERVAL);
 
 // Initial check on startup
 setTimeout(checkRecentMatches, 5000); // 5 sec delay to let DB init completion
+
+// ─── Vote Reminder: push to users who haven't voted 30 min before match ──────
+const voteReminderSent = new Set(); // matchId — prevent duplicate reminders
+setInterval(async () => {
+  if (!VAPID_PUBLIC_KEY) return;
+  try {
+    const now = new Date();
+    const completedIds = await getCachedCompletedIds();
+    for (const match of matchesCache) {
+      if (completedIds.has(match.id) || voteReminderSent.has(match.id)) continue;
+      const startTime = new Date(`${match.date}T${match.time}:00+05:30`);
+      const diffMs = startTime.getTime() - now.getTime();
+      // Window: 25–35 min before start
+      if (diffMs >= 25 * 60 * 1000 && diffMs <= 35 * 60 * 1000) {
+        voteReminderSent.add(match.id);
+        const voted = await query('SELECT DISTINCT user_id FROM votes WHERE match_id = $1', [match.id]);
+        const votedIds = new Set(voted.map(r => r.user_id));
+        const allSubs = await query('SELECT DISTINCT user_id FROM push_subscriptions');
+        const unvoted = allSubs.filter(s => !votedIds.has(s.user_id));
+        for (const sub of unvoted) {
+          sendPushToUser(sub.user_id, {
+            title: '⏰ Vote before it locks!',
+            body: `${match.team1} vs ${match.team2} starts in ~30 min`,
+            icon: '/favicon.ico',
+            tag: `reminder_${match.id}`,
+            data: { url: '/' },
+          }).catch(() => {});
+        }
+        console.log(`[Push] Vote reminder sent for match ${match.id} to ${unvoted.length} user(s)`);
+        break;
+      }
+    }
+  } catch (e) {
+    console.error('[Push] Vote reminder error:', e.message);
+  }
+}, 60 * 1000);
 
 // ─── Live Score Service ────────────────────────────────────────────────────
 
@@ -3924,6 +4180,7 @@ app.use((err, req, res, next) => {
 initDb()
   .then(async () => {
     await loadMatchESPNIds();
+    await initVapid();
     server.listen(PORT, () => {
       console.log(`IPL Predictor API with Chat running on http://localhost:${PORT}`);
     });

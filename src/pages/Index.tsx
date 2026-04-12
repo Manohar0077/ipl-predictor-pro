@@ -6,7 +6,8 @@ import { useRoom } from "@/lib/room";
 import { api } from "@/lib/api";
 import { getPollOpenMatches, type MatchResult } from "@/lib/data";
 import { useMatches } from "@/lib/matches";
-import { Users } from "lucide-react";
+import { Users, Bell, BellOff } from "lucide-react";
+import { registerServiceWorker, subscribeToPush, unsubscribeFromPush, isPushSubscribed } from "@/lib/push";
 import OpenPolls from "@/components/dashboard/OpenPolls";
 import CompletedMatches from "@/components/dashboard/CompletedMatches";
 import UpcomingMatches from "@/components/dashboard/UpcomingMatches";
@@ -30,6 +31,8 @@ const Index = () => {
   const [overrides, setOverrides] = useState<Record<string, MatchOverride>>({});
   const [announcement, setAnnouncement] = useState("");
   const [liveScores, setLiveScores] = useState<Record<string, { score: string | null; status: string | null; updatedAt: string }>>({});
+  const [pushSubscribed, setPushSubscribed] = useState(false);
+  const [pushLoading, setPushLoading] = useState(false);
 
   // Pagination for upcoming
   const [upcomingPage, setUpcomingPage] = useState(1);
@@ -75,6 +78,9 @@ const Index = () => {
     if (!roomLoading && !activeRoom) { navigate("/rooms"); return; }
     loadData();
 
+    registerServiceWorker();
+    isPushSubscribed().then(setPushSubscribed);
+
     // Check for last poll summary - only on first load after login
     const isJustLoggedIn = sessionStorage.getItem("justLoggedIn") === "true";
     if (isJustLoggedIn) {
@@ -108,6 +114,23 @@ const Index = () => {
       sock.off('result_updated', resultUpdatedHandler);
     };
   }, [loadData]);
+
+  const handlePushToggle = async () => {
+    setPushLoading(true);
+    try {
+      if (pushSubscribed) {
+        await unsubscribeFromPush();
+        setPushSubscribed(false);
+      } else {
+        const ok = await subscribeToPush();
+        setPushSubscribed(ok);
+      }
+    } catch {
+      // ignore
+    } finally {
+      setPushLoading(false);
+    }
+  };
 
   const handleVote = async (matchId: string, prediction: string, isBulk?: boolean) => {
     if (!activeRoom) return;
@@ -181,12 +204,24 @@ const Index = () => {
               <h3 className="font-display text-2xl text-foreground leading-none">{activeRoom.name}</h3>
             </div>
           </div>
-          <button
-            onClick={() => navigate("/rooms")}
-            className="rounded-lg border border-border bg-background px-3 py-1.5 text-xs font-medium text-muted-foreground hover:text-foreground transition-colors"
-          >
-            Switch Room
-          </button>
+          <div className="flex items-center gap-2">
+            {'Notification' in window && (
+              <button
+                onClick={handlePushToggle}
+                disabled={pushLoading}
+                title={pushSubscribed ? 'Disable notifications' : 'Enable notifications'}
+                className="flex items-center justify-center rounded-lg border border-border bg-background p-1.5 text-muted-foreground hover:text-foreground transition-colors disabled:opacity-50"
+              >
+                {pushSubscribed ? <Bell size={15} className="text-primary" /> : <BellOff size={15} />}
+              </button>
+            )}
+            <button
+              onClick={() => navigate("/rooms")}
+              className="rounded-lg border border-border bg-background px-3 py-1.5 text-xs font-medium text-muted-foreground hover:text-foreground transition-colors"
+            >
+              Switch Room
+            </button>
+          </div>
         </div>
 
         {/* Active / Live Polls */}
