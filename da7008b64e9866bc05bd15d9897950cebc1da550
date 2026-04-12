@@ -1,0 +1,23 @@
+public/sw.js
+  a9fb2a6f60ac18db 2,7
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.1.23",
+  "base_commit_sha": "da7008b64e9866bc05bd15d9897950cebc1da550",
+  "prompts": {
+    "a9fb2a6f60ac18db": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "801f4827-c3ff-4df3-98c2-45a9fb5b0e39",
+        "model": "claude-sonnet-4-6"
+      },
+      "human_author": "Bheem Kollati <bheemkollati@gmail.com>",
+      "messages": [],
+      "total_additions": 2,
+      "total_deletions": 0,
+      "accepted_lines": 2,
+      "overriden_lines": 0
+    }
+  }
+}
