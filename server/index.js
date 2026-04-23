@@ -2530,6 +2530,34 @@ function extractResultTextESPN(notes, statusDetail, situation) {
   return null;
 }
 
+/** Helper to extract total balls bowled by a team from ESPN rosters data */
+function extractBallsFromRoster(rosters, teamAbbr) {
+  if (!Array.isArray(rosters)) return 0;
+  const teamRoster = rosters.find(r => (r.team?.abbreviation || '').toUpperCase() === teamAbbr.toUpperCase());
+  if (!teamRoster || !Array.isArray(teamRoster.roster)) return 0;
+  
+  let totalBalls = 0;
+  for (const p of teamRoster.roster) {
+    const stats = p.stats || [];
+    const bowling = stats.find(s => s.name === 'bowling' || s.type === 'bowling');
+    if (bowling && bowling.stats) {
+      // ESPN usually has a 'balls' stat in the bowling category
+      const ballsStat = bowling.stats.find(st => st.name === 'balls' || st.abbreviation === 'B');
+      if (ballsStat) totalBalls += parseInt(ballsStat.value) || 0;
+    }
+  }
+  return totalBalls;
+}
+
+/** Helper to convert "19.3" overs format to total balls */
+function oversToBalls(overs) {
+  if (!overs) return 0;
+  const oStr = String(overs);
+  if (!oStr.includes('.')) return (parseInt(oStr) || 0) * 6;
+  const [o, b] = oStr.split('.').map(Number);
+  return (o || 0) * 6 + (b || 0);
+}
+
 /** Fetch toss info + playing XIs for a specific ESPN event via the summary endpoint.
  *  Also returns state/status/winnerName/team1/team2 for use in checkRecentMatches. */
 async function fetchESPNSummary(espnEventId) {
@@ -2593,8 +2621,8 @@ async function fetchESPNSummary(espnEventId) {
 
     const td1 = extractTeamDataLS(c1);
     const td2 = extractTeamDataLS(c2);
-    const b1 = extractBallsFromRoster(data.rosters, t1Abbr);
-    const b2 = extractBallsFromRoster(data.rosters, t2Abbr);
+    const b1 = extractBallsFromRoster(data.rosters, t1Abbr) || oversToBalls(td1.overs);
+    const b2 = extractBallsFromRoster(data.rosters, t2Abbr) || oversToBalls(td2.overs);
 
     return {
       toss: extractTossInfoESPN(data.notes),
