@@ -152,7 +152,12 @@ async function loadMatchesCache() {
     );
     if (rows.length > 0) {
       matchesCache = rows;
+      matchESPNIdMap.clear();
+      for (const row of rows) {
+        if (row.espn_event_id) matchESPNIdMap.set(row.id, row.espn_event_id);
+      }
       console.log(`[Matches] Loaded ${matchesCache.length} matches from DB`);
+      console.log(`[Matches] Loaded ${matchESPNIdMap.size} ESPN IDs from DB`);
     }
   } catch (e) {
     console.error('[Matches] Error loading from DB, using hardcoded schedule:', e.message);
@@ -3038,10 +3043,10 @@ function formatH2HFromESPN(h2hGames, t1, t2) {
   return lines.join('\n');
 }
 
-/** Auto-sync only runs from (match start + 4h) through (match start + 6h), every CHECK_INTERVAL. */
+/** Auto-sync runs from (match start + 3h) through (match start + 6h), every CHECK_INTERVAL. */
 const HOUR_MS = 60 * 60 * 1000;
-const AUTO_RESULT_CHECK_DELAY_MS = 4 * HOUR_MS;
-const AUTO_RESULT_CHECK_WINDOW_MS = 2 * HOUR_MS;
+const AUTO_RESULT_CHECK_DELAY_MS = 3 * HOUR_MS;
+const AUTO_RESULT_CHECK_WINDOW_MS = 3 * HOUR_MS;
 
 /** Helper to parse "180/5" or "180" into {runs, wickets} */
 function parseRunsWickets(teamSummary) {
@@ -3222,7 +3227,7 @@ async function checkRecentMatches(isManual = false) {
 
       const stateDone =
         state === 'post' ||
-        /won by|match abandoned/i.test(status);
+        /won by|match abandoned|no result|tied| won$/i.test(status);
 
       if (stateDone) {
         const winner = parseWinnerFromStatus(status, match.team1, match.team2) ||
@@ -3446,19 +3451,10 @@ const commentaryCache = new Map();   // ourMatchId -> { espnEventId, lastId, tos
 // lastId: null = uninitialized (skip existing items on first poll); number = last ESPN item id posted
 const rainDelayState = new Map();    // ourMatchId -> { inDelay: bool, lastPostedAt: number }
 const liveScoreBotState = new Map(); // ourMatchId -> { lastScore, lastPostedAt, lastWickets }
-const resultTriggerSet = new Set();  // ourMatchId -> triggered (prevent duplicate auto-result triggers)
+const resultTriggerLastAttempt = new Map(); // ourMatchId -> timestamp of last result sync attempt
 const matchESPNIdMap = new Map();    // ourMatchId -> espnEventId (loaded from DB at startup)
 const tossDetectedAt = new Map();    // ourMatchId -> timestamp when toss was first detected
 
-async function loadMatchESPNIds() {
-  try {
-    const rows = await query('SELECT id, espn_event_id FROM matches WHERE espn_event_id IS NOT NULL');
-    for (const row of rows) matchESPNIdMap.set(row.id, row.espn_event_id);
-    console.log(`[Matches] Loaded ${matchESPNIdMap.size} ESPN IDs from DB`);
-  } catch (e) {
-    console.error('[Matches] Could not load ESPN IDs from DB:', e.message);
-  }
-}
 
 /** Sum all wickets fallen from a score string like "MI 182/5 (20) · CSK 143/6 (16.3)" */
 function parseWicketsFromScore(score) {
@@ -3555,12 +3551,18 @@ async function pollMatchData() {
       }
 
       const matchAppearsOver = state === 'post' ||
-        /won by|match abandoned|no result|tied/i.test(statusRaw);
+        /won by|match abandoned|no result|tied| won$/i.test(statusRaw);
 
-      if (matchAppearsOver && !completedIds.has(match.id) && !resultTriggerSet.has(match.id)) {
-        resultTriggerSet.add(match.id);
-        console.log(`[Poll] Match ${match.id} appears over — triggering result sync`);
-        checkRecentMatches(true).catch(e => console.error('[Poll] Result trigger failed:', e.message));
+      if (matchAppearsOver && !completedIds.has(match.id)) {
+        const nowMs = Date.now();
+        const lastAttempt = resultTriggerLastAttempt.get(match.id) || 0;
+        
+        // Cooldown: retry every 5 minutes if it still appears over but isn't completed
+        if (nowMs - lastAttempt > 5 * 60 * 1000) {
+          resultTriggerLastAttempt.set(match.id, nowMs);
+          console.log(`[Poll] Match ${match.id} appears over — triggering result sync`);
+          checkRecentMatches(true).catch(e => console.error('[Poll] Result trigger failed:', e.message));
+        }
       }
 
       // ── Toss & lineups ──────────────────────────────────────────────────────
@@ -4903,7 +4905,7 @@ app.use((err, req, res, next) => {
 
 initDb()
   .then(async () => {
-    await loadMatchESPNIds();
+    await loadMatchesCache();
     await initVapid();
     await backfillMatchScores();
     server.listen(PORT, () => {
