@@ -2535,11 +2535,11 @@ function extractResultTextESPN(notes, statusDetail, situation) {
 async function fetchESPNSummary(espnEventId) {
   try {
     const url = `${ESPN_IPL_BASE}/summary?event=${espnEventId}`;
-    console.log(`[ESPN] GET ${url}`);
-    const resp = await axios.get(url, { timeout: 8000 });
+    console.log(`[ESPN-Debug] GET ${url}`);
+    const resp = await axios.get(url, { timeout: 15000 });
     const data = resp.data || {};
     const topKeys = Object.keys(data);
-    console.log(`[ESPN] ${resp.status} ${url} — keys: ${topKeys.join(', ')}`);
+    console.log(`[ESPN-Debug] ${resp.status} ${url} — keys: ${topKeys.join(', ')}`);
 
     const comp = data.header?.competitions?.[0] || {};
 
@@ -2626,7 +2626,11 @@ async function fetchESPNSummary(espnEventId) {
       },
     };
   } catch (e) {
-    console.error(`[ESPN] fetchESPNSummary error for event ${espnEventId}:`, e.message);
+    console.error(`[ESPN-Debug] fetchESPNSummary error for event ${espnEventId}:`, e.message);
+    if (e.response) {
+      console.error(`[ESPN-Debug] Response status: ${e.response.status}`);
+      console.error(`[ESPN-Debug] Response data keys: ${Object.keys(e.response.data || {}).join(', ')}`);
+    }
     return null;
   }
 }
@@ -3195,10 +3199,16 @@ async function checkRecentMatches(isManual = false) {
       return nowMs >= windowStart && nowMs <= windowEnd;
     });
 
-    if (pendingMatches.length === 0) return { updated: 0, checked: 0 };
+    if (pendingMatches.length === 0) {
+      console.log(`[Sync-Debug] No pending matches found (nowMs: ${nowMs})`);
+      return { updated: 0, checked: 0 };
+    }
 
     const toCheck = pendingMatches.filter(m => !existingIds.has(m.id));
-    if (toCheck.length === 0) return { updated: 0, checked: 0 };
+    if (toCheck.length === 0) {
+      console.log(`[Sync-Debug] All candidate matches already have results.`);
+      return { updated: 0, checked: 0 };
+    }
 
     console.log(`🔍 AutomatedResultService: Checking ${toCheck.length} pending matches via ESPN...`);
     let updatedCount = 0;
@@ -3208,6 +3218,7 @@ async function checkRecentMatches(isManual = false) {
     for (const match of toCheck) {
       // Use espn_event_id directly via the summary endpoint
       const espnId = matchESPNIdMap.get(match.id);
+      console.log(`[Sync-Debug] Checking match ${match.id} with espnId ${espnId}`);
       if (!espnId) {
         console.log(`❓ AutomatedResultService: No ESPN ID for ${match.id} (${match.team1} vs ${match.team2}), skipping`);
         notFoundOnESPN.push(`${match.team1} vs ${match.team2}`);
@@ -3480,6 +3491,7 @@ async function pollMatchData() {
   try {
     const now = new Date();
     const completedIds = await getCachedCompletedIds();
+    console.log(`[Poll-Debug] Polling live matches. Completed matches in DB: ${completedIds.size}`);
 
     for (const id of liveScoreCache.keys()) {
       if (completedIds.has(id)) liveScoreCache.delete(id);
@@ -3556,6 +3568,8 @@ async function pollMatchData() {
       if (matchAppearsOver && !completedIds.has(match.id)) {
         const nowMs = Date.now();
         const lastAttempt = resultTriggerLastAttempt.get(match.id) || 0;
+        
+        console.log(`[Poll-Debug] Match ${match.id} appears over? ${matchAppearsOver}. Status: "${statusRaw}". Last attempt: ${lastAttempt}. Now: ${nowMs}`);
         
         // Cooldown: retry every 5 minutes if it still appears over but isn't completed
         if (nowMs - lastAttempt > 5 * 60 * 1000) {
