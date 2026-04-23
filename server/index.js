@@ -1142,13 +1142,21 @@ app.post("/api/admin/sync-results", authMiddleware, adminMiddleware, asyncRoute(
 }));
 
 app.get("/api/results", asyncRoute(async (req, res) => {
-  const rows = await query("SELECT match_id, winner, score_summary, toss FROM results");
+  const rows = await query(`
+    SELECT r.match_id, r.winner, r.score_summary, r.toss,
+           ms.team1 AS t1_short, ms.team1_runs, ms.team1_wickets, ms.team1_overs,
+           ms.team2 AS t2_short, ms.team2_runs, ms.team2_wickets, ms.team2_overs
+    FROM results r
+    LEFT JOIN match_scores ms ON r.match_id = ms.match_id
+  `);
   const map = {};
   for (const r of rows) {
     map[r.match_id] = {
       winner: r.winner,
       scoreSummary: r.score_summary || null,
       toss: r.toss || null,
+      team1: r.team1_runs !== null ? { runs: r.team1_runs, wickets: r.team1_wickets, overs: r.team1_overs } : null,
+      team2: r.team2_runs !== null ? { runs: r.team2_runs, wickets: r.team2_wickets, overs: r.team2_overs } : null,
     };
   }
   res.json(map);
@@ -1208,6 +1216,43 @@ app.post("/api/result", authMiddleware, adminMiddleware, asyncRoute(async (req, 
       }
     } catch (e) {
       console.error(`[Scores] Manual result score sync failed for ${matchId}:`, e.message);
+    }
+
+    // Notify all clients and send push
+    invalidateResultsCache();
+    io.emit('result_updated', { matchId, winner });
+    const match = matchesCache.find(m => m.id === matchId);
+    let pushTitle, pushBody;
+    if (winner === 'nr') {
+      pushTitle = '🌧️ Match Abandoned';
+      pushBody = match ? `${match.team1} vs ${match.team2} — No Result` : 'No Result';
+    } else if (winner === 'draw') {
+      pushTitle = '🤝 It\'s a Tie!';
+      pushBody = match ? `${match.team1} vs ${match.team2}` : 'Match tied';
+    } else {
+      pushTitle = `🏆 ${winner} Won!`;
+      pushBody = (scoreSummary !== undefined && scoreSummary !== '') ? scoreSummary : (match ? `${match.team1} vs ${match.team2}` : winner);
+    }
+    broadcastPush({ title: pushTitle, body: pushBody, icon: '/favicon.ico', tag: `result_${matchId}`, data: { url: `/poll/${matchId}` } })
+      .catch(e => console.error('[Push] Broadcast failed:', e.message));
+
+    // Bot win announcement
+    if (!winPostedSet.has(matchId) && match && await isBotEnabled(matchId)) {
+      winPostedSet.add(matchId);
+      const allRooms = await query('SELECT id FROM rooms');
+      const botName = getBotName(matchId);
+      let winMsg;
+      if (winner === 'nr') {
+        winMsg = `🌧️ Match abandoned — No Result.`;
+      } else if (winner === 'draw') {
+        winMsg = `🤝 What a match! It's a tie!`;
+      } else {
+        winMsg = `🏆 Match Over!\n${winner} won!`;
+        if (scoreSummary) winMsg += `\n📊 ${scoreSummary}`;
+      }
+      for (const room of allRooms) {
+        await postBotMessage(room.id, matchId, winMsg, botName);
+      }
     }
   }
 
@@ -3087,7 +3132,7 @@ async function backfillMatchScores() {
         const ov1 = parseOversNew(summary.team1, summary.status);
         const ov2 = parseOversNew(summary.team2, summary.status);
 
-        let t1Data = { runs: s1.runs, wickets: s1.wickets, overs: ov1, short: summary.team1.short };
+        let team1Data = { runs: s1.runs, wickets: s1.wickets, overs: ov1, short: summary.team1.short };
         let team2Data = { runs: s2.runs, wickets: s2.wickets, overs: ov2, short: summary.team2.short };
 
         if (summary.team1.short !== matchRow.t1_local && summary.team2.short === matchRow.t1_local) {
