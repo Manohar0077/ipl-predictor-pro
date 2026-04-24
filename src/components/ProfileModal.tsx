@@ -2,6 +2,8 @@ import { useState, useRef } from "react";
 import { User } from "@/lib/api";
 import { X, Upload, Trash2, User as UserIcon, Lock, Image as ImageIcon } from "lucide-react";
 import { getAvatarUrl } from "@/lib/utils";
+import Cropper from 'react-easy-crop';
+import { getCroppedImg } from "@/lib/imageUtils";
 
 const PRESETS = [
   "https://api.dicebear.com/9.x/notionists/svg?seed=Felix&backgroundColor=f5f5f5",
@@ -39,6 +41,12 @@ export default function ProfileModal({ user, onClose, onLogout, onSave }: Props)
   const [error, setError] = useState("");
 
   const [loading, setLoading] = useState(false);
+
+  // Cropping State
+  const [imageToCrop, setImageToCrop] = useState<string | null>(null);
+  const [crop, setCrop] = useState({ x: 0, y: 0 });
+  const [zoom, setZoom] = useState(1);
+  const [croppedAreaPixels, setCroppedAreaPixels] = useState<any>(null);
 
   const handleSave = async () => {
     setError("");
@@ -83,31 +91,27 @@ export default function ProfileModal({ user, onClose, onLogout, onSave }: Props)
     }
   };
 
+  const handleApplyCrop = async () => {
+    if (imageToCrop && croppedAreaPixels) {
+      try {
+        const croppedImage = await getCroppedImg(imageToCrop, croppedAreaPixels);
+        if (croppedImage) {
+          setSelectedPic(croppedImage);
+        }
+      } catch (e) {
+        console.error("Failed to crop image", e);
+      }
+      setImageToCrop(null);
+    }
+  };
+
   const processFile = (file: File) => {
     if (!file.type.startsWith("image/")) return;
     const reader = new FileReader();
     reader.onload = (e) => {
-      const img = new Image();
-      img.onload = () => {
-        const canvas = document.createElement("canvas");
-        const ctx = canvas.getContext("2d");
-        if (!ctx) return;
-
-        const size = 150;
-        canvas.width = size;
-        canvas.height = size;
-        const scale = Math.max(size / img.width, size / img.height);
-        const w = img.width * scale;
-        const h = img.height * scale;
-        const x = (size - w) / 2;
-        const y = (size - h) / 2;
-
-        ctx.fillStyle = "#ffffff";
-        ctx.fillRect(0, 0, size, size);
-        ctx.drawImage(img, x, y, w, h);
-        setSelectedPic(canvas.toDataURL("image/jpeg", 0.7));
-      };
-      img.src = e.target?.result as string;
+      setImageToCrop(e.target?.result as string);
+      setZoom(1);
+      setCrop({ x: 0, y: 0 });
     };
     reader.readAsDataURL(file);
   };
@@ -256,6 +260,65 @@ export default function ProfileModal({ user, onClose, onLogout, onSave }: Props)
             <Lock size={16} /> LOGOUT
           </button>
         </div>
+
+        {/* Cropping UI Overlay */}
+        {imageToCrop && (
+          <div className="absolute inset-0 z-[60] flex flex-col bg-background p-6 rounded-2xl animate-scale-in">
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="font-display text-xl text-gradient-gold">ADJUST PHOTO</h3>
+              <button onClick={() => setImageToCrop(null)} className="rounded-lg p-1 text-muted-foreground hover:bg-muted transition-colors">
+                <X size={18} />
+              </button>
+            </div>
+            
+            <div className="relative flex-1 w-full min-h-[250px] rounded-xl overflow-hidden bg-black border border-border">
+              <Cropper
+                image={imageToCrop}
+                crop={crop}
+                zoom={zoom}
+                aspect={1}
+                cropShape="round"
+                showGrid={false}
+                onCropChange={setCrop}
+                onCropComplete={(_, pixels) => setCroppedAreaPixels(pixels)}
+                onZoomChange={setZoom}
+              />
+            </div>
+            
+            <div className="mt-6 space-y-6">
+              <div className="space-y-2">
+                <div className="flex justify-between text-[10px] font-bold uppercase tracking-widest text-muted-foreground">
+                  <span>Zoom</span>
+                  <span>{Math.round(zoom * 100)}%</span>
+                </div>
+                <input
+                  type="range"
+                  value={zoom}
+                  min={1}
+                  max={3}
+                  step={0.1}
+                  onChange={(e) => setZoom(Number(e.target.value))}
+                  className="w-full h-1.5 bg-muted rounded-lg appearance-none cursor-pointer accent-primary"
+                />
+              </div>
+
+              <div className="flex gap-3">
+                <button
+                  onClick={() => setImageToCrop(null)}
+                  className="flex-1 rounded-xl border border-border py-3 text-sm font-semibold text-muted-foreground hover:bg-muted transition-colors"
+                >
+                  CANCEL
+                </button>
+                <button
+                  onClick={handleApplyCrop}
+                  className="flex-1 rounded-xl bg-primary py-3 font-display text-lg tracking-wider text-primary-foreground hover:brightness-110 transition-all glow-gold shadow-[0_0_15px_rgba(251,191,36,0.3)]"
+                >
+                  APPLY CROP
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
         </div>
       </div>
     </div>
