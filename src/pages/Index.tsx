@@ -34,6 +34,7 @@ const Index = () => {
   const [liveScores, setLiveScores] = useState<Record<string, { score: string | null; status: string | null; updatedAt: string }>>({});
   const [pushSubscribed, setPushSubscribed] = useState(false);
   const [pushLoading, setPushLoading] = useState(false);
+  const [initialDataLoaded, setInitialDataLoaded] = useState(false);
 
   // Pagination for upcoming
   const [upcomingPage, setUpcomingPage] = useState(1);
@@ -70,8 +71,10 @@ const Index = () => {
       setOverrides(ovMap);
       setAnnouncement(ann.text);
       setLiveScores(liveScoreData);
+      setInitialDataLoaded(true);
     } catch {
       // API not available
+      setInitialDataLoaded(true);
     }
   }, [user, activeRoom]);
 
@@ -294,6 +297,7 @@ const Index = () => {
 
         {/* Active / Live Polls */}
         <OpenPolls
+          isLoading={!initialDataLoaded}
           openPolls={openPolls}
           voteCounts={voteCounts ?? {}}
           myVotes={myVotes}

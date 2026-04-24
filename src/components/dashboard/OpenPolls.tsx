@@ -5,6 +5,7 @@ import { Coffee } from "lucide-react";
 
 
 interface Props {
+  isLoading?: boolean;
   openPolls: Match[];
   voteCounts: Record<string, Record<string, number>>;
   myVotes: Record<string, string>;
@@ -19,7 +20,20 @@ interface Props {
   onShowSummary?: () => void;
 }
 
-const OpenPolls = React.memo(({ openPolls, voteCounts, myVotes, allVotes, onVote, completedCount, totalMatchCount, results, overrides, roomId, liveScores, onShowSummary }: Props) => {
+const OpenPolls = React.memo(({ isLoading, openPolls, voteCounts, myVotes, allVotes, onVote, completedCount, totalMatchCount, results, overrides, roomId, liveScores, onShowSummary }: Props) => {
+  if (isLoading) {
+    return (
+      <div className="mb-8">
+        <div className="mb-4 flex items-center gap-2">
+          <div className="h-8 w-64 animate-pulse rounded-lg bg-muted/60" />
+        </div>
+        <div className="space-y-4">
+          <div className="h-64 w-full animate-pulse rounded-2xl bg-muted/30 border border-border" />
+        </div>
+      </div>
+    );
+  }
+
   if (openPolls.length > 0) {
     return (
       <div className="mb-8">
