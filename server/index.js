@@ -1451,12 +1451,15 @@ async function getLeaderboardInternal() {
 
   enriched.sort((a, b) => {
     if (b.points !== a.points) return b.points - a.points;
-    if (b.correct !== a.correct) return b.correct - a.correct;
+    if (b.voted !== a.voted) return b.voted - a.voted;
 
     // NRR2 (Cricket NRR) tie-breaker
     const n2A = a.nrr2 ?? -Infinity;
     const n2B = b.nrr2 ?? -Infinity;
     if (n2B !== n2A) return n2B - n2A;
+
+    if (b.correct !== a.correct) return b.correct - a.correct;
+
     const valA = a.nrr ?? -Infinity;
     const valB = b.nrr ?? -Infinity;
     if (valB !== valA) return valB - valA;
@@ -1837,12 +1840,15 @@ async function getRoomLeaderboard(roomId) {
 
   enriched.sort((a, b) => {
     if (b.points !== a.points) return b.points - a.points;
-    if (b.correct !== a.correct) return b.correct - a.correct;
+    if (b.voted !== a.voted) return b.voted - a.voted;
 
     // NRR2 (Cricket NRR) tie-breaker
     const n2A = a.nrr2 ?? -Infinity;
     const n2B = b.nrr2 ?? -Infinity;
     if (n2B !== n2A) return n2B - n2A;
+
+    if (b.correct !== a.correct) return b.correct - a.correct;
+
     const valA = a.nrr ?? -Infinity;
     const valB = b.nrr ?? -Infinity;
     if (valB !== valA) return valB - valA;
