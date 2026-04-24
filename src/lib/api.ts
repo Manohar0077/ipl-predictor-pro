@@ -7,7 +7,15 @@ if (!API_URL) {
 }
 
 function getToken(): string | null {
-  return localStorage.getItem("ipl_token");
+  const token = localStorage.getItem("ipl_token");
+  if (token && token.length > 5000) {
+    // If a token is absurdly large, it was likely corrupted with base64 image data.
+    // This causes 431 Request Header Fields Too Large errors.
+    // Clear it to auto-recover the user.
+    clearToken();
+    return null;
+  }
+  return token;
 }
 
 function setToken(token: string) {

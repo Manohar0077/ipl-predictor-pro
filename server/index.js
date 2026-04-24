@@ -851,7 +851,7 @@ app.post("/api/register", asyncRoute(async (req, res) => {
     );
 
     const token = jwt.sign(
-      { id: user.id, username: user.username, is_admin: user.is_admin, profile_pic: user.profile_pic },
+      { id: user.id, username: user.username, is_admin: user.is_admin },
       JWT_SECRET,
       { expiresIn: "30d" }
     );
@@ -881,7 +881,7 @@ app.post("/api/login", asyncRoute(async (req, res) => {
   if (!valid) return res.status(401).json({ error: "Invalid credentials" });
 
   const token = jwt.sign(
-    { id: user.id, username: user.username, is_admin: user.is_admin, profile_pic: user.profile_pic },
+    { id: user.id, username: user.username, is_admin: user.is_admin },
     JWT_SECRET,
     { expiresIn: "30d" }
   );
@@ -947,7 +947,7 @@ app.put("/api/me", authMiddleware, asyncRoute(async (req, res) => {
   );
 
   const token = jwt.sign(
-    { id: updatedUser.id, username: updatedUser.username, is_admin: updatedUser.is_admin, profile_pic: updatedUser.profile_pic },
+    { id: updatedUser.id, username: updatedUser.username, is_admin: updatedUser.is_admin },
     JWT_SECRET,
     { expiresIn: "30d" }
   );
