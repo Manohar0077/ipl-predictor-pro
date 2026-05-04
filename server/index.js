@@ -1318,11 +1318,12 @@ async function computeNRR2Stats(userIds, roomId = null) {
   const votes = await query(voteSql, voteParams);
 
   // function to convert over format (19.2) to decimal (19.333)
+  // Use numeric math to avoid NUMERIC(5,2) trailing-zero issues (e.g. "19.20" → b=20 bug)
   const toDecimalOvers = (ov) => {
-    const str = String(ov);
-    if (!str.includes('.')) return parseFloat(ov);
-    const [w, b] = str.split('.').map(Number);
-    return w + (b / 6);
+    const num = parseFloat(ov);
+    const wholeOvers = Math.floor(num);
+    const balls = Math.round((num - wholeOvers) * 10);
+    return wholeOvers + (balls / 6);
   };
 
   const uStats = {};
