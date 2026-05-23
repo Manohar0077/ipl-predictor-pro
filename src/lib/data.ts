@@ -109,6 +109,8 @@ export const IPL_SCHEDULE: Match[] = [
   {"id":"m68","date":"2026-05-23","time":"19:30","team1":"LSG","team2":"PBKS","venue":"Ekana Cricket Stadium, Lucknow"},
   {"id":"m69","date":"2026-05-24","time":"15:30","team1":"MI","team2":"RR","venue":"Wankhede Stadium, Mumbai"},
   {"id":"m70","date":"2026-05-24","time":"19:30","team1":"KKR","team2":"DC","venue":"Eden Gardens, Kolkata"},
+  {"id":"m71","date":"2026-05-26","time":"19:30","team1":"RCB","team2":"GT","venue":"HPCA Stadium, Dharamshala"},
+
 ];
 
 // Poll open logic: match poll is open if before match time and previous match has result (or first match)
