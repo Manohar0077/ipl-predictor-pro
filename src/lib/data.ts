@@ -110,7 +110,7 @@ export const IPL_SCHEDULE: Match[] = [
   { "id": "m69", "date": "2026-05-24", "time": "15:30", "team1": "MI", "team2": "RR", "venue": "Wankhede Stadium, Mumbai" },
   { "id": "m70", "date": "2026-05-24", "time": "19:30", "team1": "KKR", "team2": "DC", "venue": "Eden Gardens, Kolkata" },
   { "id": "m71", "date": "2026-05-26", "time": "19:30", "team1": "RCB", "team2": "GT", "venue": "HPCA Stadium, Dharamshala" },
-  { "id": "m72", "date": "2026-05-28", "time": "19:30", "team1": "SRH", "team2": "RR", "venue": "Maharaja Yadavindra Singh Stadium, New Chandigarh" },
+  { "id": "m72", "date": "2026-05-27", "time": "19:30", "team1": "SRH", "team2": "RR", "venue": "Maharaja Yadavindra Singh Stadium, New Chandigarh" },
 
 ];
 
