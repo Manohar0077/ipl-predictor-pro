@@ -11,9 +11,17 @@ const { Server } = require("socket.io");
 let matchesCache = require("./schedule");
 const webpush = require("web-push");
 
+let lastMatchesCacheLoadTime = 0;
+
 async function isVotingLocked(matchId) {
-  const match = matchesCache.find((m) => m.id === matchId);
-  if (!match) return false;
+  let match = matchesCache.find((m) => m.id === matchId);
+  if (!match) {
+    if (Date.now() - lastMatchesCacheLoadTime > 10000) {
+      await loadMatchesCache();
+      match = matchesCache.find((m) => m.id === matchId);
+    }
+    if (!match) return false;
+  }
 
   const override = await queryOne("SELECT manual_locked, lock_delay FROM match_overrides WHERE match_id = $1", [matchId]);
   if (override) {
@@ -152,6 +160,7 @@ async function loadMatchesCache() {
     );
     if (rows.length > 0) {
       matchesCache = rows;
+      lastMatchesCacheLoadTime = Date.now();
       matchESPNIdMap.clear();
       for (const row of rows) {
         if (row.espn_event_id) matchESPNIdMap.set(row.id, row.espn_event_id);
@@ -3525,6 +3534,10 @@ function itemKey(item) {
 async function pollMatchData() {
   try {
     const now = new Date();
+    // Reload matches cache periodically (every 5 minutes) to stay synced with manual DB additions
+    if (now.getTime() - lastMatchesCacheLoadTime > 5 * 60 * 1000) {
+      await loadMatchesCache();
+    }
     const completedIds = await getCachedCompletedIds();
     console.log(`[Poll-Debug] Polling live matches. Completed matches in DB: ${completedIds.size}`);
 
@@ -3753,6 +3766,9 @@ app.get('/api/live-score', asyncRoute(async (req, res) => {
 }));
 
 app.get('/api/matches', asyncRoute(async (req, res) => {
+  if (Date.now() - lastMatchesCacheLoadTime > 60000) {
+    await loadMatchesCache();
+  }
   res.json(matchesCache);
 }));
 
