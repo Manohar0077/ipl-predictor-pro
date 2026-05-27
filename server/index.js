@@ -425,20 +425,25 @@ async function initDb() {
     );
   `);
 
-  // Seed from hardcoded schedule if table is empty
-  const matchCountRow = await queryOne('SELECT COUNT(*)::int AS n FROM matches');
-  if (!matchCountRow || matchCountRow.n === 0) {
-    const SEED_SCHEDULE = require('./schedule');
-    for (let i = 0; i < SEED_SCHEDULE.length; i++) {
-      const m = SEED_SCHEDULE[i];
-      await query(
-        `INSERT INTO matches (id, match_num, date, time, team1, team2, venue)
-         VALUES ($1, $2, $3, $4, $5, $6, $7) ON CONFLICT (id) DO NOTHING`,
-        [m.id, i + 1, m.date, m.time || '19:30', m.team1, m.team2, m.venue || '']
-      );
-    }
-    console.log(`[Matches] Seeded ${SEED_SCHEDULE.length} matches from hardcoded schedule`);
+  // Sync all hardcoded matches to DB at startup
+  const SEED_SCHEDULE = require('./schedule');
+  for (let i = 0; i < SEED_SCHEDULE.length; i++) {
+    const m = SEED_SCHEDULE[i];
+    await query(
+      `INSERT INTO matches (id, match_num, date, time, team1, team2, venue)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)
+       ON CONFLICT (id) DO UPDATE SET
+         match_num = EXCLUDED.match_num,
+         date = EXCLUDED.date,
+         time = EXCLUDED.time,
+         team1 = EXCLUDED.team1,
+         team2 = EXCLUDED.team2,
+         venue = EXCLUDED.venue`,
+      [m.id, i + 1, m.date, m.time || '19:30', m.team1, m.team2, m.venue || '']
+    );
   }
+  console.log(`[Matches] Synced ${SEED_SCHEDULE.length} matches from hardcoded schedule to DB`);
+
 
   const existing = await queryOne(
     "SELECT id FROM users WHERE username = $1",

@@ -42,7 +42,7 @@ export const IPL_SCHEDULE: Match[] = [
   { "id": "m01", "date": "2026-03-28", "time": "19:30", "team1": "RCB", "team2": "SRH", "venue": "M. Chinnaswamy Stadium, Bengaluru" },
   { "id": "m02", "date": "2026-03-29", "time": "19:30", "team1": "MI", "team2": "KKR", "venue": "Wankhede Stadium, Mumbai" },
   { "id": "m03", "date": "2026-03-30", "time": "19:30", "team1": "RR", "team2": "CSK", "venue": "Barsapara Cricket Stadium, Guwahati" },
-  { "id": "m04", "date": "2026-03-31", "time": "19:30", "team1": "PBKS", "team2": "GT", "venue": "Maharaja Yadavindra Singh Stadium, New Chandigarh" },
+  { "id": "m04", "date": "2026-03-31", "time": "19:30", "team1": "PBKS", "team2": "GT", "venue": "Maharaja Yadavindra Singh International Cricket Stadium, New Chandigarh" },
   { "id": "m05", "date": "2026-04-01", "time": "19:30", "team1": "LSG", "team2": "DC", "venue": "Ekana Cricket Stadium, Lucknow" },
   { "id": "m06", "date": "2026-04-02", "time": "19:30", "team1": "KKR", "team2": "SRH", "venue": "Eden Gardens, Kolkata" },
   { "id": "m07", "date": "2026-04-03", "time": "19:30", "team1": "CSK", "team2": "PBKS", "venue": "MA Chidambaram Stadium, Chennai" },
@@ -55,7 +55,7 @@ export const IPL_SCHEDULE: Match[] = [
   { "id": "m14", "date": "2026-04-08", "time": "19:30", "team1": "DC", "team2": "GT", "venue": "Arun Jaitley Stadium, Delhi" },
   { "id": "m15", "date": "2026-04-09", "time": "19:30", "team1": "KKR", "team2": "LSG", "venue": "Eden Gardens, Kolkata" },
   { "id": "m16", "date": "2026-04-10", "time": "19:30", "team1": "RR", "team2": "RCB", "venue": "Barsapara Cricket Stadium, Guwahati" },
-  { "id": "m17", "date": "2026-04-11", "time": "15:30", "team1": "PBKS", "team2": "SRH", "venue": "Maharaja Yadavindra Singh Stadium, New Chandigarh" },
+  { "id": "m17", "date": "2026-04-11", "time": "15:30", "team1": "PBKS", "team2": "SRH", "venue": "Maharaja Yadavindra Singh International Cricket Stadium, New Chandigarh" },
   { "id": "m18", "date": "2026-04-11", "time": "19:30", "team1": "CSK", "team2": "DC", "venue": "MA Chidambaram Stadium, Chennai" },
   { "id": "m19", "date": "2026-04-12", "time": "15:30", "team1": "LSG", "team2": "GT", "venue": "Ekana Cricket Stadium, Lucknow" },
   { "id": "m20", "date": "2026-04-12", "time": "19:30", "team1": "MI", "team2": "RCB", "venue": "Wankhede Stadium, Mumbai" },
@@ -67,7 +67,7 @@ export const IPL_SCHEDULE: Match[] = [
   { "id": "m26", "date": "2026-04-18", "time": "15:30", "team1": "RCB", "team2": "DC", "venue": "M. Chinnaswamy Stadium, Bengaluru" },
   { "id": "m27", "date": "2026-04-18", "time": "19:30", "team1": "SRH", "team2": "CSK", "venue": "Rajiv Gandhi Intl. Stadium, Hyderabad" },
   { "id": "m28", "date": "2026-04-19", "time": "15:30", "team1": "KKR", "team2": "RR", "venue": "Eden Gardens, Kolkata" },
-  { "id": "m29", "date": "2026-04-19", "time": "19:30", "team1": "PBKS", "team2": "LSG", "venue": "Maharaja Yadavindra Singh Stadium, New Chandigarh" },
+  { "id": "m29", "date": "2026-04-19", "time": "19:30", "team1": "PBKS", "team2": "LSG", "venue": "Maharaja Yadavindra Singh International Cricket Stadium, New Chandigarh" },
   { "id": "m30", "date": "2026-04-20", "time": "19:30", "team1": "GT", "team2": "MI", "venue": "Narendra Modi Stadium, Ahmedabad" },
   { "id": "m31", "date": "2026-04-21", "time": "19:30", "team1": "SRH", "team2": "DC", "venue": "Rajiv Gandhi Intl. Stadium, Hyderabad" },
   { "id": "m32", "date": "2026-04-22", "time": "19:30", "team1": "LSG", "team2": "RR", "venue": "Ekana Cricket Stadium, Lucknow" },
@@ -78,7 +78,7 @@ export const IPL_SCHEDULE: Match[] = [
   { "id": "m37", "date": "2026-04-26", "time": "15:30", "team1": "GT", "team2": "CSK", "venue": "Narendra Modi Stadium, Ahmedabad" },
   { "id": "m38", "date": "2026-04-26", "time": "19:30", "team1": "LSG", "team2": "KKR", "venue": "Ekana Cricket Stadium, Lucknow" },
   { "id": "m39", "date": "2026-04-27", "time": "19:30", "team1": "DC", "team2": "RCB", "venue": "Arun Jaitley Stadium, Delhi" },
-  { "id": "m40", "date": "2026-04-28", "time": "19:30", "team1": "PBKS", "team2": "RR", "venue": "Maharaja Yadavindra Singh Stadium, New Chandigarh" },
+  { "id": "m40", "date": "2026-04-28", "time": "19:30", "team1": "PBKS", "team2": "RR", "venue": "Maharaja Yadavindra Singh International Cricket Stadium, New Chandigarh" },
   { "id": "m41", "date": "2026-04-29", "time": "19:30", "team1": "MI", "team2": "SRH", "venue": "Wankhede Stadium, Mumbai" },
   { "id": "m42", "date": "2026-04-30", "time": "19:30", "team1": "GT", "team2": "RCB", "venue": "Narendra Modi Stadium, Ahmedabad" },
   { "id": "m43", "date": "2026-05-01", "time": "19:30", "team1": "RR", "team2": "DC", "venue": "Sawai Mansingh Stadium, Jaipur" },
@@ -110,8 +110,8 @@ export const IPL_SCHEDULE: Match[] = [
   { "id": "m69", "date": "2026-05-24", "time": "15:30", "team1": "MI", "team2": "RR", "venue": "Wankhede Stadium, Mumbai" },
   { "id": "m70", "date": "2026-05-24", "time": "19:30", "team1": "KKR", "team2": "DC", "venue": "Eden Gardens, Kolkata" },
   { "id": "m71", "date": "2026-05-26", "time": "19:30", "team1": "RCB", "team2": "GT", "venue": "HPCA Stadium, Dharamshala" },
-  { "id": "m72", "date": "2026-05-27", "time": "19:30", "team1": "SRH", "team2": "RR", "venue": "Maharaja Yadavindra Singh Stadium, New Chandigarh" },
-
+  { "id": "m72", "date": "2026-05-27", "time": "19:30", "team1": "SRH", "team2": "RR", "venue": "Maharaja Yadavindra Singh International Cricket Stadium, New Chandigarh" },
+  { "id": "m73", "date": "2026-05-29", "time": "19:30", "team1": "GT", "team2": "RR", "venue": "Maharaja Yadavindra Singh International Cricket Stadium, New Chandigarh" },
 ];
 
 // Poll open logic: match poll is open if before match time and previous match has result (or first match)
