@@ -71,5 +71,6 @@ module.exports = [
   {"id":"m70","date":"2026-05-24","time":"19:30","team1":"KKR","team2":"DC","venue":"Eden Gardens, Kolkata"},
   {"id":"m71","date":"2026-05-26","time":"19:30","team1":"RCB","team2":"GT","venue":"HPCA Stadium, Dharamshala"},
   {"id":"m72","date":"2026-05-27","time":"19:30","team1":"SRH","team2":"RR","venue":"Maharaja Yadavindra Singh International Cricket Stadium, New Chandigarh"},
-  {"id":"m73","date":"2026-05-29","time":"19:30","team1":"GT","team2":"RR","venue":"Maharaja Yadavindra Singh International Cricket Stadium, New Chandigarh"}
+  {"id":"m73","date":"2026-05-29","time":"19:30","team1":"GT","team2":"RR","venue":"Maharaja Yadavindra Singh International Cricket Stadium, New Chandigarh"},
+  {"id":"m74","date":"2026-05-31","time":"19:30","team1":"RCB","team2":"GT","venue":"Narendra Modi Stadium, Ahmedabad"}
 ];

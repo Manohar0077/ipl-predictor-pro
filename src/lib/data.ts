@@ -112,6 +112,7 @@ export const IPL_SCHEDULE: Match[] = [
   { "id": "m71", "date": "2026-05-26", "time": "19:30", "team1": "RCB", "team2": "GT", "venue": "HPCA Stadium, Dharamshala" },
   { "id": "m72", "date": "2026-05-27", "time": "19:30", "team1": "SRH", "team2": "RR", "venue": "Maharaja Yadavindra Singh International Cricket Stadium, New Chandigarh" },
   { "id": "m73", "date": "2026-05-29", "time": "19:30", "team1": "GT", "team2": "RR", "venue": "Maharaja Yadavindra Singh International Cricket Stadium, New Chandigarh" },
+  { "id": "m74", "date": "2026-05-31", "time": "19:30", "team1": "RCB", "team2": "GT", "venue": "Narendra Modi Stadium, Ahmedabad" },
 ];
 
 // Poll open logic: match poll is open if before match time and previous match has result (or first match)

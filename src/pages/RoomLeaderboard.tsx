@@ -4,10 +4,14 @@ import Header from "@/components/Header";
 import { useAuth } from "@/lib/auth";
 import { api, type LeaderboardEntry, type Room } from "@/lib/api";
 import UserPredictionsDialog from "@/components/UserPredictionsDialog";
-import { ArrowLeft, Copy, Check, Shield } from "lucide-react";
+import { ArrowLeft, Copy, Check, Shield, Trophy } from "lucide-react";
 
 import { getAvatarUrl, assignRanks } from "@/lib/utils";
 import Footer from "@/components/Footer";
+import ChampionBanner from "@/components/ChampionBanner";
+
+// The final match of IPL 2026
+const FINAL_MATCH_ID = "m74";
 
 
 
@@ -108,16 +112,24 @@ const RoomLeaderboard = () => {
   const [pickUser, setPickUser] = useState<string | null>(null);
   const [adminUpdating, setAdminUpdating] = useState<number | null>(null);
   const [memberRemoving, setMemberRemoving] = useState<number | null>(null);
+  const [showChampion, setShowChampion] = useState(false);
+  const [isFinalDone, setIsFinalDone] = useState(false);
 
   useEffect(() => {
     if (!user) { navigate("/login"); return; }
     const roomId = parseInt(id!);
     if (isNaN(roomId)) { navigate("/rooms"); return; }
     setLoading(true);
-    Promise.all([api.getRoom(roomId), api.getRoomLeaderboard(roomId)])
-      .then(([roomData, boardData]) => {
+    Promise.all([api.getRoom(roomId), api.getRoomLeaderboard(roomId), api.getResults()])
+      .then(([roomData, boardData, results]) => {
         setRoom(roomData);
         setLeaderboard(assignRanks(boardData));
+        // Show champion banner if the final match has a result and not dismissed this session
+        const finalDone = !!results[FINAL_MATCH_ID];
+        setIsFinalDone(finalDone);
+        if (finalDone && !sessionStorage.getItem("champion_banner_dismissed")) {
+          setShowChampion(true);
+        }
       })
       .catch(() => navigate("/rooms"))
       .finally(() => setLoading(false));
@@ -169,6 +181,16 @@ const RoomLeaderboard = () => {
   return (
     <div className="min-h-screen bg-background">
       <Header />
+      {showChampion && room && leaderboard.length > 0 && (
+        <ChampionBanner
+          leaderboard={leaderboard}
+          roomName={room.name}
+          onClose={() => {
+            setShowChampion(false);
+            sessionStorage.setItem("champion_banner_dismissed", "1");
+          }}
+        />
+      )}
       <main className="container mx-auto max-w-4xl px-4 py-6 md:py-8">
 
         {/* Back link */}
@@ -181,6 +203,15 @@ const RoomLeaderboard = () => {
           {room ? (
             <>
               <h2 className="font-display text-5xl text-gradient-gold sm:text-6xl">{room.name.toUpperCase()}</h2>
+              {isFinalDone && (
+                <button
+                  onClick={() => setShowChampion(true)}
+                  className="mt-3 inline-flex items-center gap-2 rounded-xl border border-yellow-500/30 bg-yellow-500/10 px-4 py-2 text-sm font-semibold text-yellow-400 hover:bg-yellow-500/20 transition-colors"
+                >
+                  <Trophy size={15} />
+                  View Final Results
+                </button>
+              )}
             </>
           ) : (
             <div className="h-14 w-48 mx-auto rounded bg-muted/40 animate-pulse" />

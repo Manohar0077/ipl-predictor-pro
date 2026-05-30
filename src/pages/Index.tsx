@@ -14,9 +14,13 @@ import CompletedMatches from "@/components/dashboard/CompletedMatches";
 import UpcomingMatches from "@/components/dashboard/UpcomingMatches";
 import Footer from "@/components/Footer";
 import PollSummaryBanner from "@/components/PollSummaryBanner";
-import type { PollSummary, MatchOverride } from "@/lib/api";
+import type { PollSummary, MatchOverride, LeaderboardEntry } from "@/lib/api";
 import AnnouncementMarquee from "@/components/AnnouncementMarquee";
 import { getSocket, connectSocket } from "@/lib/socket";
+import ChampionBanner from "@/components/ChampionBanner";
+import { assignRanks } from "@/lib/utils";
+
+const FINAL_MATCH_ID = "m74";
 
 const PAGE_SIZE = 10;
 
@@ -35,6 +39,8 @@ const Index = () => {
   const [pushSubscribed, setPushSubscribed] = useState(false);
   const [pushLoading, setPushLoading] = useState(false);
   const [initialDataLoaded, setInitialDataLoaded] = useState(false);
+  const [showChampion, setShowChampion] = useState(false);
+  const [championBoard, setChampionBoard] = useState<(LeaderboardEntry & { rank: number })[]>([]);
 
   // Pagination for upcoming
   const [upcomingPage, setUpcomingPage] = useState(1);
@@ -72,6 +78,15 @@ const Index = () => {
       setAnnouncement(ann.text);
       setLiveScores(liveScoreData);
       setInitialDataLoaded(true);
+
+      // Show champion banner when the final match is done
+      if (r[FINAL_MATCH_ID] && !sessionStorage.getItem("champion_banner_dismissed")) {
+        try {
+          const board = await api.getRoomLeaderboard(activeRoom.id);
+          setChampionBoard(assignRanks(board));
+          setShowChampion(true);
+        } catch { /* ignore */ }
+      }
     } catch {
       // API not available
       setInitialDataLoaded(true);
@@ -236,6 +251,16 @@ const Index = () => {
           onClose={() => {
             setShowSummary(false);
           }} 
+        />
+      )}
+      {showChampion && activeRoom && championBoard.length > 0 && (
+        <ChampionBanner
+          leaderboard={championBoard}
+          roomName={activeRoom.name}
+          onClose={() => {
+            setShowChampion(false);
+            sessionStorage.setItem("champion_banner_dismissed", "1");
+          }}
         />
       )}
 
